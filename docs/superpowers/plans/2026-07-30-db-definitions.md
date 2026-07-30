@@ -345,6 +345,8 @@ git commit -m "feat: add packaging, tooling and the CLI skeleton"
 
 ```python
 # tests/test_definition.py
+import dataclasses
+
 import pytest
 from sqlalchemy import Column, Integer, MetaData, Table
 
@@ -388,7 +390,7 @@ def test_validate_rejects_a_version_table_that_is_also_a_data_table():
 
 def test_definition_is_frozen():
     definition = SchemaDefinition(name="pkg", metadata=make_metadata("a"))
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         definition.name = "other"
 ```
 
@@ -1876,9 +1878,11 @@ def test_cli_apply_reads_the_file(engine, tmp_path, monkeypatch):
 
 
 def test_a_failing_statement_rolls_everything_back(engine):
+    from sqlalchemy.exc import ProgrammingError
+
     url = str(engine.url.render_as_string(hide_password=False))
     sql = "BEGIN;\nCREATE TABLE good (id integer primary key);\nSELECT nonexistent_function();\nCOMMIT;\n"
-    with pytest.raises(Exception):
+    with pytest.raises(ProgrammingError):
         apply_sql(sql, url)
     assert "good" not in inspect(engine).get_table_names()
 ```
