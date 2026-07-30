@@ -21,3 +21,24 @@ data provider) are the clearest cases: both only read.
 * Provide one entry point to create and upgrade a deployment's schema.
 * Run as a one-shot job in a deployment (compose/Swarm), not as a long-running
   service.
+
+## Development setup
+
+Bootstrap the development environment:
+
+```bash
+make venv
+```
+
+Then run checks and tests:
+
+```bash
+make lint        # Run ruff and type checker
+make test-local  # Unit tests (no database)
+```
+
+For integration tests against a PostgreSQL container, ensure Docker is running:
+
+```bash
+make test-integration
+```

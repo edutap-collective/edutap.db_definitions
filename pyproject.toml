@@ -26,8 +26,10 @@ dev = [
     "ty",
 ]
 docs = ["myst-parser", "sphinx>=8"]
-# Known eduTAP packages that own tables. Pick at install time:
+# Known eduTAP packages that own tables, available only from the eduTAP org sources,
+# not from a public index. Pick at install time if needed:
 #   pip install "edutap.db_definitions[pass_builder,data_provider]"
+# Omitting them from [dev] and CI ensures resolution works in public environments.
 data_provider = ["edutap.data_provider"]
 pass_builder = ["edutap.pass_builder"]
 
