@@ -1815,8 +1815,12 @@ def _command_check(args: argparse.Namespace) -> int:
     return 0
 ```
 
-Note the ordering that makes the third test pass: `_load_checked` runs the contract
-check **before** `_connect()`, so a contract violation never needs a database.
+`_load_checked` runs the contract check **before** `_connect()`, so a contract
+violation never needs a database. Careful with the third test though: asserting only
+the exit code and the message does **not** pin that ordering, because `create_engine`
+and `Settings().url()` are both lazy and succeed without any environment — the test
+would pass with the order reversed. Pin it by replacing `cli._connect` with a
+function that raises if it is called (corrected during execution, 2026-07-30).
 
 - [ ] **Step 4: Run the tests**
 
