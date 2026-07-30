@@ -10,6 +10,10 @@ logger = logging.getLogger("edutap.db_definitions")
 def apply_sql(sql: str, url: str, dry_run: bool = False) -> int:
     """Execute the document and return the number of executed statements.
 
+    Counts only schema statements (CREATE TABLE, CREATE INDEX, etc.),
+    excluding transaction control directives (BEGIN, COMMIT, SET ROLE) and
+    comments. Multi-line statements count as one.
+
     The document brings its own transaction control (``BEGIN;`` / ``COMMIT;``), so
     the connection runs in AUTOCOMMIT and the script is handed to the driver as
     one unit. Wrapping it in SQLAlchemy's own transaction instead would nest two
@@ -26,4 +30,26 @@ def apply_sql(sql: str, url: str, dry_run: bool = False) -> int:
             connection.exec_driver_sql(sql)
     finally:
         engine.dispose()
-    return sum(1 for line in sql.splitlines() if line.rstrip().endswith(";"))
+    return _count_schema_statements(sql)
+
+
+def _count_schema_statements(sql: str) -> int:
+    """Count schema statements, excluding directives and comments."""
+    count = 0
+    for statement in sql.split(";"):
+        # Remove comments from each line and strip whitespace
+        lines = []
+        for line in statement.splitlines():
+            # Remove comment part (everything after --)
+            if "--" in line:
+                line = line[: line.index("--")]
+            lines.append(line.strip())
+
+        # Join lines and clean up
+        clean = " ".join(lines).strip()
+
+        # Skip if empty or a directive (BEGIN, COMMIT, SET ROLE)
+        if clean and not any(clean.upper().startswith(d) for d in ["BEGIN", "COMMIT", "SET ROLE"]):
+            count += 1
+
+    return count

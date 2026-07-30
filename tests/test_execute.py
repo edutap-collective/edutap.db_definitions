@@ -13,8 +13,26 @@ def test_apply_creates_the_tables(engine):
     sql = render_create([make_definition("pkg.a", "table_a")])
     url = str(engine.url.render_as_string(hide_password=False))
     executed = apply_sql(sql, url)
-    assert executed >= 1
+    assert executed == 1
     assert "table_a" in inspect(engine).get_table_names()
+
+
+def test_multi_column_table_counts_as_one_statement(engine):
+    # Multi-line CREATE TABLE spanning several lines should count as 1 statement
+    sql = render_create([make_definition("pkg.a", "table_a")])
+    url = str(engine.url.render_as_string(hide_password=False))
+    executed = apply_sql(sql, url)
+    assert executed == 1
+
+
+def test_multiple_tables_count_correctly(engine):
+    # Two tables should count as 2 statements
+    sql = render_create([make_definition("pkg.a", "table_a", "table_b")])
+    url = str(engine.url.render_as_string(hide_password=False))
+    executed = apply_sql(sql, url)
+    assert executed == 2
+    assert "table_a" in inspect(engine).get_table_names()
+    assert "table_b" in inspect(engine).get_table_names()
 
 
 def test_dry_run_changes_nothing(engine):
