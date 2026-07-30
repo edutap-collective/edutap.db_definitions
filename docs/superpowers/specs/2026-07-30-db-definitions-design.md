@@ -150,6 +150,14 @@ package boundary (`pass_state` references `heidi_full_view` inside the same
 package); it becomes relevant when the view and pass-state tables move to
 `edutap.data_provider` and `lmu_edutap_full_view` only writes them.
 
+Ordering alone is not enough to make such a key work. A `ForeignKey` resolves by
+table name **within one `MetaData`**, so a key into another package's `MetaData`
+raises `NoReferencedTableError` in any order. `create` and `diff` therefore build
+one merged `MetaData` in `requires` order first and render each package's slice of
+it: the key resolves, `merged.sorted_tables` gives the globally correct order, and
+the per-package `-- ===== name =====` sections stay. `check` enforces the
+declaration that makes the order right (see *`check`*).
+
 ## Commands
 
 Command name `edutap-dbdef`; the package name stays `edutap.db_definitions`.
@@ -233,9 +241,12 @@ deviations. Intended for CI and as a pre-deploy gate — with mostly stable sche
 this is the everyday use, and it is the same machinery.
 
 It additionally verifies the package contract: identical naming convention across
-packages, unique `version_table` per package, and no table-name collision between
-two packages. The last one must fail hard: in a shared database it would mean
-silent data loss.
+packages, unique `version_table` per package, no table-name collision between two
+packages, and no foreign key into another package that `requires` does not declare.
+The table-name collision must fail hard: in a shared database it would mean silent
+data loss. The undeclared dependency must fail too, because with the merged
+`MetaData` it no longer breaks loudly — it would quietly produce a file whose
+ordering happens to be right or wrong.
 
 ### `apply`
 

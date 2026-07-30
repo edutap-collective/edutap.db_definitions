@@ -66,12 +66,51 @@ def _convention_deviations(definitions: Sequence[SchemaDefinition]) -> list[Cont
     return violations
 
 
+def _undeclared_dependencies(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
+    """Report a foreign key into another package that ``requires`` does not declare.
+
+    Rendering resolves cross-package foreign keys through one merged MetaData, so
+    an undeclared dependency no longer *fails* — it silently produces a file whose
+    statement order depends on the topological sort having no reason to put the
+    referenced table first. The declaration is what makes the order right, so a
+    missing one is a contract violation and not a warning.
+
+    The target is read from ``ForeignKey.target_fullname``, a plain string:
+    touching ``ForeignKey.column`` would resolve the key and raise for exactly
+    the case this check is about.
+    """
+    owner = {
+        table: definition.name for definition in definitions for table in definition.table_names
+    }
+    violations = []
+    for definition in definitions:
+        for table in definition.metadata.tables.values():
+            for key in sorted(table.foreign_keys, key=lambda k: k.target_fullname):
+                target_table = key.target_fullname.rsplit(".", 1)[0]
+                target_package = owner.get(target_table)
+                if target_package is None or target_package == definition.name:
+                    continue
+                if target_package in definition.requires:
+                    continue
+                violations.append(
+                    ContractViolation(
+                        "undeclared_dependency",
+                        f"{definition.name}: table {table.name!r} references "
+                        f"{target_table!r}, which belongs to {target_package}, but "
+                        f"{definition.name} does not declare "
+                        f"requires=({target_package!r},).",
+                    )
+                )
+    return violations
+
+
 def check_contract(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
     """Return every contract violation across the given definitions."""
     return [
         *_table_collisions(definitions),
         *_version_table_collisions(definitions),
         *_convention_deviations(definitions),
+        *_undeclared_dependencies(definitions),
     ]
 
 

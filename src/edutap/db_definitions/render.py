@@ -6,7 +6,7 @@ from importlib.metadata import PackageNotFoundError, version
 from sqlalchemy import MetaData, Table, create_mock_engine
 from sqlalchemy.schema import DDLElement
 
-from .definition import SchemaDefinition
+from .definition import NAMING_CONVENTION, SchemaDefinition
 
 _MOCK_URL = "postgresql+psycopg://"
 
@@ -37,6 +37,43 @@ def _package_version(name: str) -> str:
         return version(name)
     except PackageNotFoundError:
         return "unknown"
+
+
+def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
+    """Copy all definitions' tables into one MetaData.
+
+    Foreign keys resolve by table name within one MetaData. A key that crosses a
+    package boundary — the very thing ``requires`` exists for — therefore cannot
+    resolve while each package's MetaData is looked at on its own: SQLAlchemy
+    raises ``NoReferencedTableError`` no matter which order the packages are
+    processed in, because the obstacle is MetaData resolution and not ordering.
+    Merging first makes the target reachable, and the merged ``sorted_tables``
+    then yields the globally correct dependency order.
+
+    Iterating ``metadata.tables.values()`` rather than ``sorted_tables`` is
+    load-bearing: ``sorted_tables`` resolves foreign keys and would raise here.
+
+    Merging is also what keeps a comparison honest — Alembic compares one
+    MetaData against the whole schema, and comparing package by package would
+    report every other package's tables as removed.
+    """
+    merged = MetaData(naming_convention=_shared_naming_convention(definitions))
+    for definition in definitions:
+        for table in definition.metadata.tables.values():
+            table.to_metadata(merged)
+    return merged
+
+
+def _shared_naming_convention(definitions: Sequence[SchemaDefinition]) -> dict[str, str]:
+    """Return the definitions' naming convention.
+
+    The contract check guarantees all selected packages share one convention, so
+    the first one is representative. Falling back to the canonical constant keeps
+    this callable for an empty sequence.
+    """
+    for definition in definitions:
+        return dict(definition.metadata.naming_convention)
+    return dict(NAMING_CONVENTION)
 
 
 def _emit(metadata: MetaData, tables: Sequence[Table]) -> list[str]:
@@ -71,11 +108,17 @@ def _repeatable(statement: str) -> str:
     return statement + ";"
 
 
-def _render_package(definition: SchemaDefinition) -> list[str]:
-    """Render one package's section, in dependency order."""
-    metadata = definition.metadata
-    # sorted_tables is dependency order: a table comes after everything it references.
-    return [f"-- ===== {definition.name} =====", *_emit(metadata, metadata.sorted_tables)]
+def _render_package(merged: MetaData, definition: SchemaDefinition) -> list[str]:
+    """Render one package's section, in the merged metadata's dependency order.
+
+    ``merged.sorted_tables`` is the global dependency order: a table comes after
+    everything it references, across package boundaries too. Taking this
+    package's slice of that order keeps the per-package sections a reviewer
+    reads by while the statements inside them stay correctly ordered.
+    """
+    owned = set(definition.metadata.tables)
+    tables = [table for table in merged.sorted_tables if table.key in owned]
+    return [f"-- ===== {definition.name} =====", *_emit(merged, tables)]
 
 
 def _header(definitions: Sequence[SchemaDefinition], timestamp: str | None) -> list[str]:
@@ -111,9 +154,10 @@ def render_create(
     timestamp: str | None = None,
 ) -> str:
     """Render the baseline DDL of all definitions into one SQL document."""
+    merged = merged_metadata(definitions)
     body: list[str] = []
     for definition in definitions:
-        body.extend(_render_package(definition))
+        body.extend(_render_package(merged, definition))
     return _document(_header(definitions, timestamp), body, ddl_role)
 
 
@@ -123,10 +167,11 @@ def render_create_split(
     timestamp: str | None = None,
 ) -> dict[str, str]:
     """Render one SQL document per package."""
+    merged = merged_metadata(definitions)
     return {
         definition.name: _document(
             _header([definition], timestamp),
-            _render_package(definition),
+            _render_package(merged, definition),
             ddl_role,
         )
         for definition in definitions

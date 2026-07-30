@@ -107,6 +107,36 @@ def make_definition_with_deferred_foreign_key(name: str) -> SchemaDefinition:
     return SchemaDefinition(name=name, metadata=metadata)
 
 
+def make_cross_package_definitions(
+    declare_requires: bool = True,
+) -> tuple[SchemaDefinition, SchemaDefinition]:
+    """Two packages where the second one's table references the first one's.
+
+    This is the shape `requires` exists for: `edutap.data_provider` owning the
+    view table that `lmu_edutap_full_view` writes a state row against. The
+    foreign key names its target as a string, so it stays unresolved until
+    something puts both tables into one MetaData.
+    """
+    provider_metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table("view_source", provider_metadata, Column("id", Integer, primary_key=True))
+
+    consumer_metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "view_state",
+        consumer_metadata,
+        Column("id", Integer, primary_key=True),
+        Column("source_id", Integer, ForeignKey("view_source.id"), nullable=False),
+    )
+
+    provider = SchemaDefinition(name="pkg.provider", metadata=provider_metadata)
+    consumer = SchemaDefinition(
+        name="pkg.consumer",
+        metadata=consumer_metadata,
+        requires=("pkg.provider",) if declare_requires else (),
+    )
+    return provider, consumer
+
+
 @pytest.fixture(autouse=True)
 def clean_database_environment(monkeypatch):
     """Remove ambient connection variables so settings tests see only what they set.

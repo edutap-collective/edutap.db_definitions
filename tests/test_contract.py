@@ -1,7 +1,7 @@
 import pytest
-from tests.conftest import make_definition
 
 from edutap.db_definitions.contract import ContractError, check_contract, raise_on_violations
+from tests.conftest import make_cross_package_definitions, make_definition
 
 
 def test_a_consistent_set_has_no_violations():
@@ -30,6 +30,27 @@ def test_diverging_naming_convention_is_reported():
         make_definition("pkg.b", "table_b", convention={"pk": "primary_%(table_name)s"}),
     ]
     assert [v.kind for v in check_contract(definitions)] == ["naming_convention"]
+
+
+def test_a_declared_cross_package_foreign_key_is_no_violation():
+    provider, consumer = make_cross_package_definitions()
+    assert check_contract([provider, consumer]) == []
+
+
+def test_a_cross_package_foreign_key_without_requires_is_reported():
+    """The declaration is what orders the packages; a missing one is a real bug.
+
+    Without `requires`, nothing keeps the referenced table from being created
+    after the table referencing it — the file would then fail on an empty
+    database, or worse, quietly depend on alphabetical luck.
+    """
+    provider, consumer = make_cross_package_definitions(declare_requires=False)
+    violations = check_contract([provider, consumer])
+    assert [v.kind for v in violations] == ["undeclared_dependency"]
+    message = violations[0].message
+    assert "pkg.consumer" in message
+    assert "pkg.provider" in message
+    assert "requires" in message
 
 
 def test_raise_on_violations_is_quiet_when_there_are_none():

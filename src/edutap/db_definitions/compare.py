@@ -7,26 +7,20 @@ from alembic.autogenerate import compare_metadata, produce_migrations
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.operations.ops import MigrateOperation
-from sqlalchemy import MetaData, inspect
+from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
 
-from .definition import NAMING_CONVENTION, SchemaDefinition
+from .definition import SchemaDefinition
+from .render import merged_metadata
 
 _DESTRUCTIVE = ("DROP TABLE", "DROP COLUMN", "DROP CONSTRAINT", "DROP INDEX")
 
-
-def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
-    """Copy all definitions' tables into one MetaData for comparison.
-
-    Alembic compares one MetaData against the whole schema; comparing package by
-    package would report every other package's tables as removed. Merging keeps
-    the comparison honest about what this deployment actually owns.
-    """
-    merged = MetaData(naming_convention=NAMING_CONVENTION)
-    for definition in definitions:
-        for table in definition.metadata.sorted_tables:
-            table.to_metadata(merged)
-    return merged
+__all__ = [
+    "describe_changes",
+    "foreign_tables",
+    "merged_metadata",
+    "render_diff",
+]
 
 
 def _known_names(definitions: Sequence[SchemaDefinition]) -> set[str]:

@@ -1,5 +1,6 @@
 from edutap.db_definitions.render import render_create, render_create_split
 from tests.conftest import (
+    make_cross_package_definitions,
     make_definition,
     make_definition_with_deferred_foreign_key,
     make_definition_with_enum_and_sequence,
@@ -112,6 +113,41 @@ def test_a_deferred_foreign_key_is_rendered_as_an_alter_table():
     """
     sql = render_create([make_definition_with_deferred_foreign_key("pkg.alter")])
     assert "ADD CONSTRAINT fk_second_first_id_first FOREIGN KEY(first_id)" in sql
+
+
+def test_a_foreign_key_across_a_package_boundary_renders():
+    """`requires` promises cross-package foreign keys; rendering must deliver them.
+
+    Rendering each package's own MetaData in isolation raised
+    ``NoReferencedTableError`` no matter the order, because the obstacle is
+    MetaData resolution and not ordering. The merged metadata resolves it, and
+    its global topological order puts the referenced table first.
+    """
+    provider, consumer = make_cross_package_definitions()
+    sql = render_create([provider, consumer])
+    assert "REFERENCES view_source (id)" in sql
+    assert sql.index("CREATE TABLE IF NOT EXISTS view_source") < sql.index(
+        "CREATE TABLE IF NOT EXISTS view_state"
+    )
+
+
+def test_cross_package_rendering_keeps_the_section_comments():
+    provider, consumer = make_cross_package_definitions()
+    sql = render_create([provider, consumer])
+    assert sql.index("-- ===== pkg.provider =====") < sql.index("-- ===== pkg.consumer =====")
+    provider_section = sql[
+        sql.index("-- ===== pkg.provider =====") : sql.index("-- ===== pkg.consumer =====")
+    ]
+    assert "view_source" in provider_section
+    assert "view_state" not in provider_section
+
+
+def test_split_renders_a_cross_package_foreign_key_per_package():
+    provider, consumer = make_cross_package_definitions()
+    documents = render_create_split([provider, consumer])
+    assert "CREATE TABLE IF NOT EXISTS view_source" in documents["pkg.provider"]
+    assert "REFERENCES view_source (id)" in documents["pkg.consumer"]
+    assert "CREATE TABLE IF NOT EXISTS view_source" not in documents["pkg.consumer"]
 
 
 def test_split_returns_one_document_per_package():

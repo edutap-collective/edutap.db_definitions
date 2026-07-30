@@ -63,7 +63,11 @@ definition = SchemaDefinition(
 `name` and `metadata` are required.
 Set `requires` to the names of packages whose tables this package's foreign
 keys reference — `edutap.db_definitions` sorts packages topologically before
-rendering.
+rendering, and resolves such a foreign key by merging the selected packages'
+metadata in that order.
+A foreign key into another package's table without the matching `requires`
+entry is a contract violation: `create`, `diff`, and `check` refuse to run and
+name both packages.
 Give every package its own `version_table` name if it uses Alembic: a shared
 database with one `alembic_version` table for every package would let the
 packages overwrite each other's migration history.

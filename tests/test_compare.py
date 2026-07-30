@@ -2,7 +2,6 @@
 
 import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table, text
-from tests.conftest import make_definition
 
 from edutap.db_definitions.compare import (
     describe_changes,
@@ -12,6 +11,7 @@ from edutap.db_definitions.compare import (
 )
 from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
 from edutap.db_definitions.render import render_create
+from tests.conftest import make_cross_package_definitions, make_definition
 
 pytestmark = pytest.mark.integration
 
@@ -33,6 +33,27 @@ def test_merged_metadata_holds_all_tables():
         [make_definition("pkg.a", "table_a"), make_definition("pkg.b", "table_b")]
     )
     assert sorted(merged.tables) == ["table_a", "table_b"]
+
+
+def test_merged_metadata_resolves_a_cross_package_foreign_key():
+    """Merging must not resolve foreign keys while copying.
+
+    Copying via ``sorted_tables`` resolves them table by table and raises
+    ``NoReferencedTableError`` for a key whose target lives in another package's
+    MetaData; ``tables.values()`` defers resolution until both are merged.
+    """
+    provider, consumer = make_cross_package_definitions()
+    merged = merged_metadata([provider, consumer])
+    assert [table.name for table in merged.sorted_tables] == ["view_source", "view_state"]
+
+
+def test_a_cross_package_foreign_key_is_diffed_against_a_live_schema(engine):
+    provider, consumer = make_cross_package_definitions()
+    definitions = [provider, consumer]
+    with engine.begin() as connection:
+        connection.execute(text(render_create(definitions)))
+    with engine.connect() as connection:
+        assert describe_changes(connection, definitions) == []
 
 
 def test_no_changes_after_applying_create(engine):

@@ -100,8 +100,10 @@ line per deviation on standard error, and exits `1`.
 Before comparing, `check` also validates the package contract across the
 selected definitions and exits `1` with a `ContractError` message — see
 {ref}`exceptions` — if any package uses a different naming
-convention, two packages claim the same `version_table`, or two packages
-define a table of the same name.
+convention, two packages claim the same `version_table`, two packages
+define a table of the same name, or a package's foreign key references
+another selected package's table without declaring that package in
+`requires`.
 
 ### `apply`
 
@@ -169,7 +171,7 @@ callable that returns one.
 |---|---|---|---|
 | `name` | `str` | yes | the package's name, used in headers, `--packages`/`--exclude` selection, and error messages |
 | `metadata` | `sqlalchemy.MetaData` | yes | the package's own metadata; must not be `SQLModel.metadata` or another package's metadata |
-| `requires` | `tuple[str, ...]` | no, default `()` | names of packages this one's tables depend on, for topological ordering across package boundaries |
+| `requires` | `tuple[str, ...]` | no, default `()` | names of packages this one's tables depend on; orders the packages and makes their metadata resolvable as one, which is what lets a foreign key cross a package boundary. Required whenever such a foreign key exists — a missing entry is a contract violation |
 | `alembic_ini` | `str \| None` | no, default `None` | path to the package's `alembic.ini`; carried and validated, unused until Alembic offline mode |
 | `version_table` | `str \| None` | no, default `None` | the package's own `alembic_version`-style table name; must be unique across the selected packages and must not also be a data table |
 
@@ -207,8 +209,9 @@ convention every package's `MetaData` must copy — see {doc}`how-to`.
 : the selected packages cannot share one database, raised by
   `raise_on_violations()` after `check_contract()` found one or more
   violations — a table name owned by more than one package, a
-  `version_table` claimed by more than one package, or a naming convention
-  that differs from `NAMING_CONVENTION`.
+  `version_table` claimed by more than one package, a naming convention
+  that differs from `NAMING_CONVENTION`, or a foreign key into another
+  selected package that `requires` does not declare.
   `create`, `diff`, and `check` load and validate the contract before doing
   their own work; `apply` does not load package definitions at all, since it
   only executes a file it is handed.
