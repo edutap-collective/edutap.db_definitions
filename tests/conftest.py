@@ -57,6 +57,35 @@ def make_definition_with_foreign_key(name: str) -> SchemaDefinition:
     return SchemaDefinition(name=name, metadata=metadata)
 
 
+@pytest.fixture(autouse=True)
+def clean_database_environment(monkeypatch):
+    """Remove ambient connection variables so settings tests see only what they set.
+
+    Settings reads the environment at instantiation. A developer shell or CI runner
+    that exports PGPORT, PGHOST or DATABASE_URL would otherwise make these tests
+    pass or fail for reasons unrelated to the code.
+    """
+    for name in (
+        "DATABASE_URL",
+        "PGDATABASE",
+        "PGHOST",
+        "PGPASSWORD",
+        "PGPORT",
+        "PGSSLMODE",
+        "PGSSLROOTCERT",
+        "PGUSER",
+        "EDUTAP_DBDEF_DATABASE",
+        "EDUTAP_DBDEF_DSN",
+        "EDUTAP_DBDEF_HOST",
+        "EDUTAP_DBDEF_PASSWORD",
+        "EDUTAP_DBDEF_PORT",
+        "EDUTAP_DBDEF_SSLMODE",
+        "EDUTAP_DBDEF_SSLROOTCERT",
+        "EDUTAP_DBDEF_USER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def installed(monkeypatch):
     """Install fake packages into the discovery seam.
