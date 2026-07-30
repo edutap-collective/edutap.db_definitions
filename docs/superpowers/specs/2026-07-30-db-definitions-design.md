@@ -170,7 +170,7 @@ sorted deterministically so that two runs produce byte-identical files and a dif
 in the deploy repository stays meaningful.
 
 ```sql
--- edutap-dbdef create — 2026-07-30T12:00:00Z
+-- edutap-dbdef create
 -- packages: edutap.data_provider (0.1.0), edutap.pass_builder (0.1.0)
 BEGIN;
 SET ROLE edutap_ddl;          -- only with --ddl-role
@@ -180,10 +180,12 @@ CREATE TABLE IF NOT EXISTS person_view ( … );
 COMMIT;
 ```
 
-The header records tool, timestamp and package versions, so it stays traceable
-which state a file came from. `IF NOT EXISTS` makes the file repeatable. One
-transaction around everything: PostgreSQL runs DDL transactionally, so an abort
-leaves no half-built schema.
+The header records tool and package versions, so it stays traceable which state a
+file came from. A **timestamp is opt-in** (`--timestamp`): by default the output
+must be byte-identical across runs, and a timestamp would defeat exactly that — the
+package versions carry the provenance instead. `IF NOT EXISTS` makes the file
+repeatable. One transaction around everything: PostgreSQL runs DDL transactionally,
+so an abort leaves no half-built schema.
 
 ### `diff`
 
@@ -279,6 +281,7 @@ src/edutap/db_definitions/
     __init__.py       # public exports: SchemaDefinition
     definition.py     # SchemaDefinition dataclass + validation
     discovery.py      # entry-point loading, selection, topological ordering
+    contract.py       # cross-package checks: convention, version tables, collisions
     render.py         # DDL rendering (create) against the PostgreSQL dialect
     compare.py        # diff/check via alembic compare_metadata
     execute.py        # apply, dry-run, connection handling
