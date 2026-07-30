@@ -29,6 +29,18 @@ class FakeEntryPoint:
         return self.value
 
 
+@dataclass
+class BrokenEntryPoint:
+    """An entry point of an installed package that cannot be imported."""
+
+    name: str
+    value: str = "broken.package.dbdef:definition"
+
+    def load(self) -> object:
+        """Fail the way a broken installed package fails."""
+        raise ImportError("No module named 'broken'")
+
+
 def make_definition(
     name: str,
     *table_names: str,
@@ -167,17 +179,29 @@ def clean_database_environment(monkeypatch):
 
 
 @pytest.fixture
-def installed(monkeypatch):
+def installed_entry_points(monkeypatch):
+    """Install arbitrary entry points into the discovery seam.
+
+    Usage: `installed_entry_points([FakeEntryPoint("schema", definition)])`
+    """
+
+    def install(points: list[object]) -> None:
+        from edutap.db_definitions import discovery
+
+        monkeypatch.setattr(discovery, "iter_entry_points", lambda: list(points))
+
+    return install
+
+
+@pytest.fixture
+def installed(installed_entry_points):
     """Install fake packages into the discovery seam.
 
     Usage: `installed([make_definition("pkg.a", "table_a")])`
     """
 
     def install(definitions: list[SchemaDefinition]) -> None:
-        from edutap.db_definitions import discovery
-
-        points = [FakeEntryPoint(name=d.name, value=d) for d in definitions]
-        monkeypatch.setattr(discovery, "iter_entry_points", lambda: points)
+        installed_entry_points([FakeEntryPoint(name=d.name, value=d) for d in definitions])
 
     return install
 

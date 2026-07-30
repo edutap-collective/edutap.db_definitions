@@ -5,10 +5,13 @@ import pathlib
 import sys
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from .compare import describe_changes, foreign_tables, render_diff
 from .contract import ContractError, check_contract, raise_on_violations
-from .discovery import load_definitions
-from .render import render_create, render_create_split
+from .definition import DefinitionError
+from .discovery import DiscoveryError, load_definitions
+from .render import RenderError, render_create, render_create_split
 
 COMMANDS: tuple[str, ...] = ("create", "diff", "check", "apply")
 """The subcommands, in help order. The documentation test checks against this."""
@@ -156,6 +159,11 @@ def _command_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _first_line(error: Exception) -> str:
+    """Return an error's first line; SQLAlchemy's messages carry several."""
+    return str(error).strip().splitlines()[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI and return the process exit code."""
     args = build_parser().parse_args(argv)
@@ -170,8 +178,17 @@ def main(argv: list[str] | None = None) -> int:
             return _command_check(args)
         if args.command == "apply":
             return _command_apply(args)
-    except ContractError as error:
+    # Every failure an operator can cause becomes a message and exit code 1.
+    # A traceback here is noise at best: this runs while preparing a schema
+    # change that a privileged role will apply.
+    except (ContractError, DefinitionError, DiscoveryError, RenderError) as error:
         sys.stderr.write(f"{error}\n")
+        return 1
+    except OSError as error:
+        sys.stderr.write(f"Cannot read or write file: {error}\n")
+        return 1
+    except SQLAlchemyError as error:
+        sys.stderr.write(f"Database error: {_first_line(error)}\n")
         return 1
     return 0
 

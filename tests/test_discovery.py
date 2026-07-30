@@ -1,7 +1,18 @@
 import pytest
-from tests.conftest import make_definition
+from sqlalchemy import MetaData
 
+from edutap.db_definitions.definition import (
+    NAMING_CONVENTION,
+    DefinitionError,
+    SchemaDefinition,
+)
 from edutap.db_definitions.discovery import DiscoveryError, load_definitions
+from tests.conftest import BrokenEntryPoint, FakeEntryPoint, make_definition
+
+
+def definition_without_tables(name: str) -> SchemaDefinition:
+    """A definition that fails validation."""
+    return SchemaDefinition(name=name, metadata=MetaData(naming_convention=NAMING_CONVENTION))
 
 
 def test_loads_all_installed_definitions(installed):
@@ -56,3 +67,54 @@ def test_a_dependency_cycle_is_an_error(installed):
 def test_a_requires_outside_the_selection_is_ignored(installed):
     installed([make_definition("pkg.a", "table_a", requires=("pkg.absent",))])
     assert [d.name for d in load_definitions()] == ["pkg.a"]
+
+
+def test_two_entry_points_for_the_same_package_name_are_an_error(installed_entry_points):
+    """Last-wins would make a whole package's tables vanish from the output.
+
+    The contract check never sees the collision either, because only one of the
+    two definitions ever reaches it.
+    """
+    installed_entry_points(
+        [
+            FakeEntryPoint(name="schema", value=make_definition("pkg.a", "table_a")),
+            FakeEntryPoint(name="schema_too", value=make_definition("pkg.a", "table_other")),
+        ]
+    )
+    with pytest.raises(DiscoveryError) as error:
+        load_definitions()
+    message = str(error.value)
+    assert "pkg.a" in message
+    assert "schema" in message
+    assert "schema_too" in message
+
+
+def test_a_broken_unrelated_entry_point_does_not_fail_a_filtered_call(
+    installed_entry_points, caplog
+):
+    """One broken installed package must not break a selection that excludes it.
+
+    A site legitimately has packages installed that it does not use here;
+    validating every entry point before filtering made such a package fatal.
+    """
+    installed_entry_points(
+        [
+            FakeEntryPoint(name="schema", value=make_definition("pkg.a", "table_a")),
+            BrokenEntryPoint(name="broken_schema"),
+        ]
+    )
+    with caplog.at_level("WARNING"):
+        loaded = load_definitions(include=["pkg.a"])
+    assert [d.name for d in loaded] == ["pkg.a"]
+    assert "broken_schema" in caplog.text
+
+
+def test_an_invalid_definition_outside_the_selection_is_not_fatal(installed):
+    installed([make_definition("pkg.a", "table_a"), definition_without_tables("pkg.empty")])
+    assert [d.name for d in load_definitions(include=["pkg.a"])] == ["pkg.a"]
+
+
+def test_an_invalid_definition_inside_the_selection_is_reported(installed):
+    installed([make_definition("pkg.a", "table_a"), definition_without_tables("pkg.empty")])
+    with pytest.raises(DefinitionError, match="no tables"):
+        load_definitions(include=["pkg.empty"])

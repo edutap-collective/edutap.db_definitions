@@ -220,13 +220,29 @@ convention every package's `MetaData` must copy — see {doc}`how-to`.
 `edutap.db_definitions.DefinitionError`
 : a package's `SchemaDefinition` cannot be used, raised by
   `SchemaDefinition.validate()`.
-  Not caught by the CLI: it surfaces as an uncaught exception if an
-  installed package announces an invalid definition.
+  Only the *selected* definitions are validated, so an unusable definition in
+  a package this run excludes is not an error here.
+  Caught by `main()`: message to standard error, exit code `1`.
 
 `edutap.db_definitions.discovery.DiscoveryError`
-: the installed definitions cannot be ordered, raised by `load_definitions()`
-  when `requires` describes a dependency cycle between packages.
-  Not caught by the CLI: it surfaces as an uncaught exception.
+: the installed definitions cannot be used together, raised by
+  `load_definitions()` when `requires` describes a dependency cycle between
+  packages, or when two entry points announce the same package `name` — the
+  latter would silently drop one package's tables from every document.
+  Caught by `main()`: message to standard error, exit code `1`.
+
+  An entry point that cannot be imported at all (a broken installed package)
+  is not an error: it is logged with the entry point's name and skipped, so
+  one broken package a site does not use cannot block a run that excludes it.
+  A selected package that never appears is reported by the
+  "requested but is not installed" warning.
+
+`OSError` and `sqlalchemy.exc.SQLAlchemyError`
+: an unreadable input file, an unwritable output path, or a failing database
+  connection.
+  Caught by `main()`: one line to standard error, exit code `1`.
+  Errors that indicate a bug in this package are deliberately *not* caught and
+  still surface as a traceback.
 
 `edutap.db_definitions.render.RenderError`
 : the requested document cannot be rendered — no package is selected, or
