@@ -2,6 +2,8 @@
 
 from importlib.metadata import version
 
+from .definition import NAMING_CONVENTION, DefinitionError, SchemaDefinition
+
 __version__ = version("edutap.db_definitions")
 
-__all__ = ["__version__"]
+__all__ = ["NAMING_CONVENTION", "DefinitionError", "SchemaDefinition", "__version__"]
