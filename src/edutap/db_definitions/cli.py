@@ -5,7 +5,7 @@ import pathlib
 import sys
 from datetime import UTC, datetime
 
-from .compare import foreign_tables, render_diff
+from .compare import describe_changes, foreign_tables, render_diff
 from .contract import ContractError, check_contract, raise_on_violations
 from .discovery import load_definitions
 from .render import render_create, render_create_split
@@ -50,7 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-destructive", action="store_true", help="emit DROP statements uncommented"
     )
 
-    subcommands.add_parser("check", help="fail if the database deviates from the definitions")
+    check = subcommands.add_parser(
+        "check", help="fail if the database deviates from the definitions"
+    )
+    _add_selection_arguments(check)
+
     subcommands.add_parser("apply", help="apply a generated SQL file")
     return parser
 
@@ -103,6 +107,26 @@ def _command_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_check(args: argparse.Namespace) -> int:
+    definitions = _load_checked(args)
+    engine = _connect()
+    try:
+        with engine.connect() as connection:
+            changes = describe_changes(connection, definitions)
+            skipped = foreign_tables(connection, definitions)
+    finally:
+        engine.dispose()
+    if skipped:
+        sys.stderr.write(f"Ignored tables of other owners: {', '.join(skipped)}\n")
+    if changes:
+        sys.stderr.write("Schema deviates from the definitions:\n")
+        for change in changes:
+            sys.stderr.write(f"  {change}\n")
+        return 1
+    sys.stdout.write("Schema is in sync with the definitions.\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI and return the process exit code."""
     args = build_parser().parse_args(argv)
@@ -113,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
             return _command_create(args)
         if args.command == "diff":
             return _command_diff(args)
+        if args.command == "check":
+            return _command_check(args)
     except ContractError as error:
         sys.stderr.write(f"{error}\n")
         return 1
