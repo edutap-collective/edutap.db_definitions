@@ -100,3 +100,25 @@ def installed(monkeypatch):
         monkeypatch.setattr(discovery, "iter_entry_points", lambda: points)
 
     return install
+
+
+@pytest.fixture(scope="session")
+def postgres_url() -> str:
+    """Start a PostgreSQL container and return a psycopg URL for it."""
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:18-alpine", driver="psycopg") as container:
+        yield container.get_connection_url()
+
+
+@pytest.fixture
+def engine(postgres_url):
+    """A fresh engine on an empty public schema."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(postgres_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    yield engine
+    engine.dispose()

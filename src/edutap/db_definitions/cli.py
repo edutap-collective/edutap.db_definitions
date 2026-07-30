@@ -5,6 +5,7 @@ import pathlib
 import sys
 from datetime import UTC, datetime
 
+from .compare import foreign_tables, render_diff
 from .contract import ContractError, check_contract, raise_on_violations
 from .discovery import load_definitions
 from .render import render_create, render_create_split
@@ -41,7 +42,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--timestamp", action="store_true", help="add a generation timestamp (breaks byte equality)"
     )
 
-    subcommands.add_parser("diff", help="render ALTER statements against a database")
+    diff = subcommands.add_parser("diff", help="render ALTER statements against a database")
+    _add_selection_arguments(diff)
+    diff.add_argument("--out", type=pathlib.Path, default=None, help="write to this file")
+    diff.add_argument("--ddl-role", default=None, help="emit SET ROLE <role> in the header")
+    diff.add_argument(
+        "--allow-destructive", action="store_true", help="emit DROP statements uncommented"
+    )
+
     subcommands.add_parser("check", help="fail if the database deviates from the definitions")
     subcommands.add_parser("apply", help="apply a generated SQL file")
     return parser
@@ -69,6 +77,32 @@ def _command_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _connect():
+    from sqlalchemy import create_engine
+
+    from .settings import Settings
+
+    return create_engine(Settings().url())
+
+
+def _command_diff(args: argparse.Namespace) -> int:
+    definitions = _load_checked(args)
+    engine = _connect()
+    try:
+        with engine.connect() as connection:
+            document = render_diff(connection, definitions, args.ddl_role, args.allow_destructive)
+            skipped = foreign_tables(connection, definitions)
+    finally:
+        engine.dispose()
+    if skipped:
+        sys.stderr.write(f"Ignored tables of other owners: {', '.join(skipped)}\n")
+    if args.out:
+        args.out.write_text(document)
+    else:
+        sys.stdout.write(document)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI and return the process exit code."""
     args = build_parser().parse_args(argv)
@@ -77,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "create":
             return _command_create(args)
+        if args.command == "diff":
+            return _command_diff(args)
     except ContractError as error:
         sys.stderr.write(f"{error}\n")
         return 1
