@@ -1940,7 +1940,11 @@ def apply_sql(sql: str, url: str, dry_run: bool = False) -> int:
             connection.exec_driver_sql(sql)
     finally:
         engine.dispose()
-    return sum(1 for line in sql.splitlines() if line.rstrip().endswith(";"))
+    # Count only body statements: BEGIN/COMMIT/SET ROLE are transaction control,
+    # comments are not statements, and a multi-line CREATE TABLE counts once
+    # (corrected during execution 2026-07-30 — the naive per-line count reported
+    # three statements for a document that created one table).
+    return _count_statements(sql)
 ```
 
 - [ ] **Step 4: Wire the `apply` subcommand**
