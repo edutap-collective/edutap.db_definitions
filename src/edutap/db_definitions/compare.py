@@ -56,9 +56,20 @@ def describe_changes(connection: Connection, definitions: Sequence[SchemaDefinit
 
 def foreign_tables(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
     """Return the database's tables that belong to no selected package."""
-    known = _known_names(definitions)
+    # "Ours" is the union of two things, both kept deliberately -- do not collapse
+    # this to just one of them:
+    #   - the declared names: each definition's data tables plus its own
+    #     version_table, which is a free-form string (e.g. "pkg_migration_state")
+    #     and must not be guessed at by a naming convention;
+    #   - the "alembic_version*" prefix on its own, kept because in a shared
+    #     eduTAP database such a table is in practice ours even when the package
+    #     that owns it is not part of the current --packages/--exclude selection.
+    # Dropping the prefix rule would misreport another selection's version table
+    # as foreign; dropping the declared names would misreport a package's own
+    # non-default-named version_table as foreign.
+    ours = _known_names(definitions) | {d.version_table for d in definitions if d.version_table}
     present = set(inspect(connection).get_table_names())
-    return sorted(name for name in present - known if not name.startswith("alembic_version"))
+    return sorted(name for name in present - ours if not name.startswith("alembic_version"))
 
 
 def _leaf_ops(ops: Iterable[MigrateOperation]) -> Iterator[MigrateOperation]:

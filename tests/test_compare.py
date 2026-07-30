@@ -78,6 +78,48 @@ def test_destructive_statements_can_be_enabled(engine):
     )
 
 
+def test_new_table_is_rendered_as_one_intact_create_statement(engine):
+    """A package's table not existing yet is the most common real diff: initial
+    deployment, or a newly added table. It is also exactly the shape that once
+    exposed a bug: Operations.invoke() writes CREATE TABLE across several
+    physical lines, and naively appending ';' to every physical line corrupted
+    the column list. Assert on the statement's structure, not just substring
+    presence, so a regression like that fails this test again.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "table_a",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("label", String(32), nullable=False),
+        Column("note", String(64), nullable=True),
+    )
+    definitions = [SchemaDefinition(name="pkg.a", metadata=metadata)]
+
+    with engine.connect() as connection:
+        changes = describe_changes(connection, definitions)
+        sql = render_diff(connection, definitions)
+
+    assert any("table_a" in change for change in changes)
+
+    lines = sql.splitlines()
+    open_index = next(i for i, line in enumerate(lines) if line.strip() == "CREATE TABLE table_a (")
+    close_index = next(i for i, line in enumerate(lines) if line.strip() == ");")
+    body = lines[open_index + 1 : close_index]
+
+    # The column/constraint lines are still inside the open statement, so none
+    # of them may carry their own terminator -- a corrupted render (';' on
+    # every physical line) would fail these three assertions.
+    assert body, "expected column definitions between the opening and closing parens"
+    assert not any(";" in line for line in body)
+    assert any("id" in line for line in body)
+    assert any("label" in line for line in body)
+    assert any("note" in line for line in body)
+
+    # Exactly one statement terminator closes the whole CREATE TABLE.
+    assert sql.count(");") == 1
+
+
 def test_foreign_tables_are_listed_and_left_alone(engine):
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE not_ours (id integer primary key)"))
@@ -86,3 +128,19 @@ def test_foreign_tables_are_listed_and_left_alone(engine):
     with engine.connect() as connection:
         assert foreign_tables(connection, definitions) == ["not_ours"]
         assert "not_ours" not in render_diff(connection, definitions)
+
+
+def test_a_declared_non_default_version_table_is_not_foreign(engine):
+    """version_table is a free-form string, not a naming convention.
+
+    foreign_tables must exclude it because the package declared it, not because
+    it happens to start with "alembic_version" -- this one deliberately does not.
+    """
+    definition = make_definition("pkg.a", "table_a", version_table="pkg_a_migration_state")
+    with engine.begin() as connection:
+        connection.execute(text(render_create([definition])))
+        connection.execute(
+            text("CREATE TABLE pkg_a_migration_state (version_num VARCHAR(32) NOT NULL)")
+        )
+    with engine.connect() as connection:
+        assert foreign_tables(connection, [definition]) == []
