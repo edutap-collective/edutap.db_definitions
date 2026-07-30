@@ -109,6 +109,83 @@ def test_a_broken_unrelated_entry_point_does_not_fail_a_filtered_call(
     assert "broken_schema" in caplog.text
 
 
+def test_a_selected_broken_package_is_a_fatal_error(installed_entry_points, caplog):
+    """A broken package that was explicitly requested must not vanish silently.
+
+    Skipping every load failure regardless of the selection let `create
+    --packages pkg.a,pkg.b` exit 0 and write a document that only contains
+    pkg.a's tables when pkg.b's entry point raised. A deploy pipeline that only
+    checks the exit code would then apply an incomplete schema.
+    """
+    installed_entry_points(
+        [
+            FakeEntryPoint(name="schema", value=make_definition("pkg.a", "table_a")),
+            BrokenEntryPoint(name="schema", value="pkg.b.models.dbdef:definition"),
+        ]
+    )
+    with caplog.at_level("WARNING"):
+        with pytest.raises(DiscoveryError) as error:
+            load_definitions(include=["pkg.a", "pkg.b"])
+    message = str(error.value)
+    assert "pkg.b" in message
+    assert "No module named 'broken'" in message
+    # The failure must not be misreported as an absent package.
+    assert "is not installed" not in message
+
+
+def test_a_selected_broken_package_error_names_the_underlying_error(installed_entry_points):
+    """The raised error must carry the exception type and message, not just a name."""
+    installed_entry_points([BrokenEntryPoint(name="schema", value="pkg.b.dbdef:definition")])
+    with pytest.raises(DiscoveryError, match="ImportError"):
+        load_definitions(include=["pkg.b"])
+
+
+def test_a_genuinely_absent_requested_package_still_only_warns(installed_entry_points, caplog):
+    """A name with no matching entry point at all is 'not installed', not 'broken'.
+
+    Distinct from a broken-but-selected package: nothing here ever tried and
+    failed to load pkg.absent, so it must keep the original, non-fatal path.
+    """
+    installed_entry_points([BrokenEntryPoint(name="schema", value="pkg.b.dbdef:definition")])
+    with caplog.at_level("WARNING"):
+        loaded = load_definitions(include=["pkg.absent"])
+    assert loaded == []
+    assert "pkg.absent" in caplog.text
+    assert "is not installed" in caplog.text
+
+
+def test_a_broken_package_is_fatal_by_default_with_no_selection(installed_entry_points):
+    """No `include` means every installed package is implicitly requested.
+
+    A deploy pipeline runs `create` with no `--packages` filter; nothing there
+    makes a broken installed package "unrelated", so it must not be silently
+    dropped from the generated document either.
+    """
+    installed_entry_points(
+        [
+            FakeEntryPoint(name="schema", value=make_definition("pkg.a", "table_a")),
+            BrokenEntryPoint(name="schema", value="pkg.b.dbdef:definition"),
+        ]
+    )
+    with pytest.raises(DiscoveryError, match="pkg.b"):
+        load_definitions()
+
+
+def test_a_broken_package_excluded_by_name_is_not_fatal_with_no_selection(
+    installed_entry_points, caplog
+):
+    """An `exclude`d broken package is exactly as 'not this run's problem' as ever."""
+    installed_entry_points(
+        [
+            FakeEntryPoint(name="schema", value=make_definition("pkg.a", "table_a")),
+            BrokenEntryPoint(name="schema", value="pkg.b.dbdef:definition"),
+        ]
+    )
+    with caplog.at_level("WARNING"):
+        loaded = load_definitions(exclude=["pkg.b"])
+    assert [d.name for d in loaded] == ["pkg.a"]
+
+
 def test_an_invalid_definition_outside_the_selection_is_not_fatal(installed):
     installed([make_definition("pkg.a", "table_a"), definition_without_tables("pkg.empty")])
     assert [d.name for d in load_definitions(include=["pkg.a"])] == ["pkg.a"]
