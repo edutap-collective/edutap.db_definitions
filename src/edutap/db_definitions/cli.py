@@ -55,7 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_selection_arguments(check)
 
-    subcommands.add_parser("apply", help="apply a generated SQL file")
+    apply_command = subcommands.add_parser("apply", help="apply a generated SQL file")
+    apply_command.add_argument("file", type=pathlib.Path, help="the SQL file to apply")
+    apply_command.add_argument("--dry-run", action="store_true", help="do not execute anything")
     return parser
 
 
@@ -127,6 +129,17 @@ def _command_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_apply(args: argparse.Namespace) -> int:
+    from .execute import apply_sql
+    from .settings import Settings
+
+    executed = apply_sql(args.file.read_text(), Settings().url(), args.dry_run)
+    sys.stdout.write(
+        "Dry run, nothing executed.\n" if args.dry_run else f"Executed {executed} statements.\n"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI and return the process exit code."""
     args = build_parser().parse_args(argv)
@@ -139,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
             return _command_diff(args)
         if args.command == "check":
             return _command_check(args)
+        if args.command == "apply":
+            return _command_apply(args)
     except ContractError as error:
         sys.stderr.write(f"{error}\n")
         return 1
