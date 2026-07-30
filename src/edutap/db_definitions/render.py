@@ -1,8 +1,9 @@
 """Render baseline DDL from package metadata, without touching a database."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 from sqlalchemy import MetaData, Table, create_mock_engine
 from sqlalchemy.dialects import postgresql
@@ -62,6 +63,20 @@ def _package_version(name: str) -> str:
         return "unknown"
 
 
+def _require_definitions(definitions: Sequence[SchemaDefinition]) -> None:
+    """Refuse to render a document that would create nothing.
+
+    An empty selection otherwise yields a valid-looking file: it applies without
+    complaint and leaves the database untouched, so a typo in ``--packages`` or a
+    missing extra shows up as an empty schema much later.
+    """
+    if not definitions:
+        raise RenderError(
+            "No packages selected — nothing to render. Check --packages/--exclude "
+            "and which eduTAP packages are installed."
+        )
+
+
 def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
     """Copy all definitions' tables into one MetaData.
 
@@ -87,7 +102,7 @@ def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
     return merged
 
 
-def _shared_naming_convention(definitions: Sequence[SchemaDefinition]) -> dict[str, str]:
+def _shared_naming_convention(definitions: Sequence[SchemaDefinition]) -> Mapping[str, Any]:
     """Return the definitions' naming convention.
 
     The contract check guarantees all selected packages share one convention, so
@@ -195,6 +210,7 @@ def render_create(
     timestamp: str | None = None,
 ) -> str:
     """Render the baseline DDL of all definitions into one SQL document."""
+    _require_definitions(definitions)
     merged = merged_metadata(definitions)
     body: list[str] = []
     for definition in definitions:
@@ -208,6 +224,7 @@ def render_create_split(
     timestamp: str | None = None,
 ) -> dict[str, str]:
     """Render one SQL document per package."""
+    _require_definitions(definitions)
     merged = merged_metadata(definitions)
     return {
         definition.name: document(

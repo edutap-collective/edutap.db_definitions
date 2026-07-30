@@ -179,6 +179,21 @@ def test_split_renders_a_cross_package_foreign_key_per_package():
     assert "CREATE TABLE IF NOT EXISTS view_source" not in documents["pkg.consumer"]
 
 
+def test_an_empty_selection_is_refused():
+    """A valid-looking document that creates nothing is the worst outcome.
+
+    It applies cleanly, so nothing complains — and the deployment ends up with
+    no tables because `--packages` had a typo or no extra was installed.
+    """
+    with pytest.raises(RenderError, match="No packages selected"):
+        render_create([])
+
+
+def test_an_empty_selection_is_refused_for_split():
+    with pytest.raises(RenderError, match="No packages selected"):
+        render_create_split([])
+
+
 def test_split_returns_one_document_per_package():
     documents = render_create_split(
         [make_definition("pkg.a", "table_a"), make_definition("pkg.b", "table_b")]

@@ -16,6 +16,20 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv pip install --system -e ".[dev]"
       - run: pytest -v
+  # `pytest` alone runs only the unit tests: pyproject sets
+  # addopts = "-m 'not integration'". Without this job the integration suite —
+  # including the only test that pins the diff renderer's statement splitting —
+  # is skipped on every push. ubuntu-latest provides the Docker daemon that
+  # testcontainers needs.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv pip install --system -e ".[dev]"
+      - run: pytest -m integration -v
   lint:
     runs-on: ubuntu-latest
     steps:

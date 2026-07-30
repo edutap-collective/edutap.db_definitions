@@ -4,7 +4,7 @@
 # CI and tox are unaffected — they install the `dev` extra explicitly.
 
 .DEFAULT_GOAL := help
-.PHONY := help venv lint reformat test-local test-integration
+.PHONY: help venv lint reformat test-local test-integration
 VENV := .venv
 PYTHON := $(VENV)/bin/python
 

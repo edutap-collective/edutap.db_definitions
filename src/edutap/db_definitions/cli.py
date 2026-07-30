@@ -13,8 +13,19 @@ from .definition import DefinitionError
 from .discovery import DiscoveryError, load_definitions
 from .render import RenderError, render_create, render_create_split
 
-COMMANDS: tuple[str, ...] = ("create", "diff", "check", "apply")
-"""The subcommands, in help order. The documentation test checks against this."""
+
+def subcommand_names(parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    """Return a parser's subcommand names, in the order they were added.
+
+    argparse offers no public API for this, so the subparser action is looked up
+    directly. It is worth the private attribute: the documentation drift guard in
+    the tests treats this list as the authority on what subcommands exist, and a
+    hand-maintained copy would let a fifth subcommand escape that guard.
+    """
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return tuple(action.choices)
+    return ()
 
 
 def _csv(value: str) -> list[str]:
@@ -62,6 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     apply_command.add_argument("file", type=pathlib.Path, help="the SQL file to apply")
     apply_command.add_argument("--dry-run", action="store_true", help="do not execute anything")
     return parser
+
+
+COMMANDS: tuple[str, ...] = subcommand_names(build_parser())
+"""The subcommands, in help order, derived from the parser itself."""
 
 
 def _load_checked(args: argparse.Namespace):

@@ -15,7 +15,7 @@ NAMING_CONVENTION: dict[str, str] = {
 
 Packages COPY this into their own ``MetaData(naming_convention=...)``. They must not
 import it: that would give every service a runtime dependency on a tool which is
-never deployed. ``contract.check_conventions`` verifies they match.
+never deployed. ``contract.check_contract`` verifies they match.
 """
 
 

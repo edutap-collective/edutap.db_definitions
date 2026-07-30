@@ -1,6 +1,5 @@
-from tests.conftest import make_definition
-
 from edutap.db_definitions.cli import main
+from tests.conftest import make_definition
 
 
 def test_create_writes_the_file(installed, tmp_path, capsys):
@@ -31,6 +30,12 @@ def test_create_honours_packages_and_ddl_role(installed, tmp_path):
     assert "table_b" in content
     assert "table_a" not in content
     assert "SET ROLE ddl;" in content
+
+
+def test_create_fails_when_the_selection_is_empty(installed, capsys):
+    installed([make_definition("pkg.a", "table_a")])
+    assert main(["create", "--packages", "pkg.typo"]) == 1
+    assert "No packages selected" in capsys.readouterr().err
 
 
 def test_create_fails_on_a_contract_violation(installed, capsys):

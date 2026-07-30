@@ -43,6 +43,9 @@ which is what makes a diff in a deploy repository meaningful.
 `--split` and `--out` both name a destination; passing both is accepted, but
 `--split` takes effect and `--out` is ignored, because the code checks
 `--split` first.
+An empty selection — a typo in `--packages`, or no eduTAP package installed —
+is refused with a `RenderError` and exit code `1` rather than written out as a
+valid-looking document that creates nothing.
 
 ### `diff`
 
