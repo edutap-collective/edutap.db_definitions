@@ -44,3 +44,25 @@ def test_readme_mentions_no_flag_the_cli_does_not_have():
     help_text = cli_help()
     for flag in sorted(set(re.findall(r"--[a-z][a-z-]+", readme))):
         assert flag in help_text, f"{flag} in README but not in the CLI"
+
+
+def test_docs_pages_mention_no_flag_the_cli_does_not_have():
+    """Same check as above, for the pages that describe this CLI's own flags.
+
+    A flag mentioned in a how-to or the reference page that the CLI does not
+    have is exactly as misleading as one in the README — a reader who
+    follows it hits `argument --whatever: not recognized`. This is how the
+    `--dsn` mistake in how-to.md survived review: only the README was
+    checked.
+
+    Scoped to `how-to.md` and `reference.md`, not every page under `docs/`:
+    `tutorial.md` and `explanation.md` legitimately quote other tools'
+    flags in shell examples and prose (`docker run --name ...`, Alembic's
+    own `--autogenerate`), which are not this CLI's flags and would make
+    this check flag false positives instead of real drift.
+    """
+    help_text = cli_help()
+    for name in ("how-to.md", "reference.md"):
+        text = (ROOT / "docs" / name).read_text()
+        for flag in sorted(set(re.findall(r"--[a-z][a-z-]+", text))):
+            assert flag in help_text, f"{flag} in {name} but not in the CLI"

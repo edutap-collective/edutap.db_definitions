@@ -122,8 +122,8 @@ access.
 
 Configure a database role that can only read the schema — `check` never
 writes.
-Point `edutap-dbdef` at it, either through `PG*`/`EDUTAP_DBDEF_*` environment
-variables or `--dsn`, then run:
+Point `edutap-dbdef` at it through the `PG*` or `EDUTAP_DBDEF_*` environment
+variables — see {doc}`reference` for the full list — then run:
 
 ```shell
 edutap-dbdef check

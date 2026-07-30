@@ -34,9 +34,11 @@ See {doc}`how-to` for the full package contract.
 
 ## Announce one table
 
-Create a second directory next to your clone for the example package.
+Create a second directory next to your clone for the example package — one
+level up from the `edutap.db_definitions` checkout you are in now.
 
 ```shell
+cd ..
 mkdir -p dbdef-tutorial-example/src/dbdef_tutorial_example
 cd dbdef-tutorial-example
 ```
@@ -62,14 +64,24 @@ packages = ["src/dbdef_tutorial_example"]
 ```
 
 Write `src/dbdef_tutorial_example/dbdef.py`.
-It defines one table, `widget`, using the canonical naming convention that
-`edutap.db_definitions` re-exports for exactly this purpose.
+It defines one table, `widget`, using the canonical naming convention.
+Copy the convention's dict literal into the package instead of importing it
+— {doc}`how-to` explains why: importing it would give a deployed package a
+runtime dependency on a tool that is never deployed.
 
 ```python
 """Announces the widget table to edutap.db_definitions."""
 
-from edutap.db_definitions import NAMING_CONVENTION, SchemaDefinition
+from edutap.db_definitions import SchemaDefinition
 from sqlalchemy import Column, Integer, MetaData, String, Table
+
+NAMING_CONVENTION = {
+    "pk": "pk_%(table_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "ix": "ix_%(table_name)s_%(column_0_name)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+}
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
 

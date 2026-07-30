@@ -144,8 +144,8 @@ The driver is synchronous `psycopg`, not `asyncpg`: Alembic's
 `compare_metadata` and DDL rendering are synchronous APIs, and a CLI has no
 concurrency to gain.
 
-There is no `--dsn` command-line flag; set `EDUTAP_DBDEF_DSN` or
-`DATABASE_URL` in the environment instead.
+The DSN is not available as a command-line flag, only through the
+environment (`EDUTAP_DBDEF_DSN` or `DATABASE_URL`).
 
 ## `SchemaDefinition`
 
