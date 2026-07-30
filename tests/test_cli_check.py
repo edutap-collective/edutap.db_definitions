@@ -1,9 +1,9 @@
 import pytest
 from sqlalchemy import text
-from tests.conftest import make_definition
 
 from edutap.db_definitions import cli
 from edutap.db_definitions.render import render_create
+from tests.conftest import make_definition
 
 
 @pytest.mark.integration

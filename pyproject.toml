@@ -21,7 +21,10 @@ dependencies = [
 dev = [
     "pdbp",
     "pytest>=8.2",
-    "ruff>=0.6",
+    # Pinned to one minor: ruff's isort classification changed between 0.14 and
+    # 0.16 and started flagging a file that was clean before, so an open floor
+    # makes local runs and CI disagree over time. Keep the hook rev below in step.
+    "ruff>=0.16,<0.17",
     "testcontainers[postgres]>=4.8",
     "ty",
 ]
