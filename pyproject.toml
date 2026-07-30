@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "edutap.db_definitions"
+version = "0.1.0"
+description = "Generates the database schema SQL for an eduTAP deployment from the installed eduTAP packages"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "EUPL-1.2"
+authors = [{ name = "eduTAP" }]
+dependencies = [
+    "alembic>=1.13",
+    "psycopg>=3.2",
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pdbp",
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "testcontainers[postgres]>=4.8",
+    "ty",
+]
+docs = ["myst-parser", "sphinx>=8"]
+# Known eduTAP packages that own tables. Pick at install time:
+#   pip install "edutap.db_definitions[pass_builder,data_provider]"
+data_provider = ["edutap.data_provider"]
+pass_builder = ["edutap.pass_builder"]
+
+[project.scripts]
+edutap-dbdef = "edutap.db_definitions.cli:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edutap"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs a PostgreSQL container"]
+addopts = "-m 'not integration'"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "D", "S"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D", "S101"]
