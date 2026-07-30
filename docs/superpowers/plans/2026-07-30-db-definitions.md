@@ -86,7 +86,7 @@ def test_main_returns_two_on_missing_subcommand():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_cli_skeleton.py -v`
+Run: `.venv/bin/python -m pytest tests/test_cli_skeleton.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions'`
 
 - [ ] **Step 3: Write `pyproject.toml`**
@@ -214,33 +214,45 @@ def run() -> None:
 
 - [ ] **Step 5: Install and run the test**
 
-Run: `uv venv && uv pip install -U -e ".[dev]" && uv run pytest tests/test_cli_skeleton.py -v`
+Run: `uv venv && uv pip install -U -e ".[dev]" && .venv/bin/python -m pytest tests/test_cli_skeleton.py -v`
 Expected: PASS (both tests)
 
 - [ ] **Step 6: Write the tooling files**
 
 ```makefile
 # Makefile
+#
+# Tools run through .venv/bin/python, not `uv run`: a bare `uv run` locks the
+# whole project including the org-internal extras (edutap.data_provider,
+# edutap.pass_builder), which no public index carries, so resolution fails.
+# CI and tox are unaffected — they install the `dev` extra explicitly.
+VENV   := .venv
+PYTHON := $(VENV)/bin/python
+
 .DEFAULT_GOAL := help
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk -F':.*?## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
-lint: ## Run ruff checks and the type checker
-	uv run ruff check src tests
-	uv run ruff format --check src tests
-	uv run ty check src
+venv: ## Create .venv and install the package with its dev extra
+	test -d $(VENV) || uv venv
+	uv pip install -U -e ".[dev]"
 
-reformat: ## Autoformat and autofix
-	uv run ruff format src tests
-	uv run ruff check --fix src tests
+lint: venv ## Run ruff checks and the type checker
+	$(PYTHON) -m ruff check src tests
+	$(PYTHON) -m ruff format --check src tests
+	$(PYTHON) -m ty check src
 
-test-local: ## Unit tests, no database needed
-	uv run pytest -v
+reformat: venv ## Autoformat and autofix
+	$(PYTHON) -m ruff format src tests
+	$(PYTHON) -m ruff check --fix src tests
 
-test-integration: ## Integration tests against a PostgreSQL container
-	uv run pytest -m integration -v
+test-local: venv ## Unit tests, no database needed
+	$(PYTHON) -m pytest -v
+
+test-integration: venv ## Integration tests against a PostgreSQL container
+	$(PYTHON) -m pytest -m integration -v
 ```
 
 ```ini
@@ -396,7 +408,7 @@ def test_definition_is_frozen():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_definition.py -v`
+Run: `.venv/bin/python -m pytest tests/test_definition.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.definition'`
 
 - [ ] **Step 3: Write the implementation**
@@ -477,7 +489,7 @@ __all__ = ["NAMING_CONVENTION", "DefinitionError", "SchemaDefinition", "__versio
 
 - [ ] **Step 5: Run the tests**
 
-Run: `uv run pytest tests/test_definition.py -v`
+Run: `.venv/bin/python -m pytest tests/test_definition.py -v`
 Expected: PASS (6 tests)
 
 - [ ] **Step 6: Commit**
@@ -649,7 +661,7 @@ def test_a_requires_outside_the_selection_is_ignored(installed):
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_discovery.py -v`
+Run: `.venv/bin/python -m pytest tests/test_discovery.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.discovery'`
 
 - [ ] **Step 4: Write the implementation**
@@ -724,7 +736,7 @@ def load_definitions(
 
 - [ ] **Step 5: Run the tests**
 
-Run: `uv run pytest tests/test_discovery.py -v`
+Run: `.venv/bin/python -m pytest tests/test_discovery.py -v`
 Expected: PASS (8 tests). `TopologicalSorter.static_order()` yields dependencies first; independent nodes come out in insertion order, which is why `_order` iterates `sorted(definitions.items())`.
 
 - [ ] **Step 6: Commit**
@@ -800,7 +812,7 @@ def test_raise_on_violations_raises_with_all_messages():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_contract.py -v`
+Run: `.venv/bin/python -m pytest tests/test_contract.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.contract'`
 
 - [ ] **Step 3: Write the implementation**
@@ -893,7 +905,7 @@ def raise_on_violations(violations: Sequence[ContractViolation]) -> None:
 
 - [ ] **Step 4: Run the tests**
 
-Run: `uv run pytest tests/test_contract.py -v`
+Run: `.venv/bin/python -m pytest tests/test_contract.py -v`
 Expected: PASS (6 tests)
 
 - [ ] **Step 5: Commit**
@@ -1008,7 +1020,7 @@ def test_split_returns_one_document_per_package():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_render.py -v`
+Run: `.venv/bin/python -m pytest tests/test_render.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.render'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1108,7 +1120,7 @@ def render_create_split(
 
 - [ ] **Step 4: Run the render tests**
 
-Run: `uv run pytest tests/test_render.py -v`
+Run: `.venv/bin/python -m pytest tests/test_render.py -v`
 Expected: PASS (11 tests). If `CreateIndex(..., if_not_exists=True)` is unsupported by the installed SQLAlchemy, drop the argument and adjust the test to expect `CREATE INDEX ix_thing_owner`.
 
 - [ ] **Step 5: Write the failing CLI test**
@@ -1157,7 +1169,7 @@ def test_create_fails_on_a_contract_violation(installed, capsys):
 
 - [ ] **Step 6: Run it to verify it fails**
 
-Run: `uv run pytest tests/test_cli_create.py -v`
+Run: `.venv/bin/python -m pytest tests/test_cli_create.py -v`
 Expected: FAIL — `create` currently returns 0 and writes nothing.
 
 - [ ] **Step 7: Wire the `create` subcommand**
@@ -1257,7 +1269,7 @@ def run() -> None:
 
 - [ ] **Step 8: Run all tests**
 
-Run: `uv run pytest -v`
+Run: `.venv/bin/python -m pytest -v`
 Expected: PASS (all tests so far)
 
 - [ ] **Step 9: Commit**
@@ -1322,7 +1334,7 @@ def test_password_is_not_leaked_by_repr(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_settings.py -v`
+Run: `.venv/bin/python -m pytest tests/test_settings.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.settings'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1393,7 +1405,7 @@ class Settings(BaseSettings):
 
 - [ ] **Step 4: Run the tests**
 
-Run: `uv run pytest tests/test_settings.py -v`
+Run: `.venv/bin/python -m pytest tests/test_settings.py -v`
 Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
@@ -1546,7 +1558,7 @@ def test_foreign_tables_are_listed_and_left_alone(engine):
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `uv run pytest -m integration tests/test_compare.py -v`
+Run: `.venv/bin/python -m pytest -m integration tests/test_compare.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.compare'`
 
 - [ ] **Step 4: Write the implementation**
@@ -1652,7 +1664,7 @@ def render_diff(
 
 - [ ] **Step 5: Run the integration tests**
 
-Run: `uv run pytest -m integration tests/test_compare.py -v`
+Run: `.venv/bin/python -m pytest -m integration tests/test_compare.py -v`
 Expected: PASS (6 tests). Docker must be running. If `Operations.invoke` writes statements without a trailing semicolon, append one in the loop; adjust the tests only if the SQL is semantically identical.
 
 - [ ] **Step 6: Wire the `diff` subcommand**
@@ -1705,7 +1717,7 @@ with `from .compare import foreign_tables, render_diff` at the top and
 
 - [ ] **Step 7: Run everything**
 
-Run: `uv run pytest -v && uv run pytest -m integration -v && make lint`
+Run: `.venv/bin/python -m pytest -v && .venv/bin/python -m pytest -m integration -v && make lint`
 Expected: all pass
 
 - [ ] **Step 8: Commit**
@@ -1766,7 +1778,7 @@ def test_check_fails_on_a_contract_violation_without_touching_the_database(insta
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest -m integration tests/test_cli_check.py -v`
+Run: `.venv/bin/python -m pytest -m integration tests/test_cli_check.py -v`
 Expected: FAIL — `check` returns 0 unconditionally.
 
 - [ ] **Step 3: Wire the `check` subcommand**
@@ -1808,7 +1820,7 @@ check **before** `_connect()`, so a contract violation never needs a database.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `uv run pytest -m integration tests/test_cli_check.py -v`
+Run: `.venv/bin/python -m pytest -m integration tests/test_cli_check.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 5: Commit**
@@ -1889,7 +1901,7 @@ def test_a_failing_statement_rolls_everything_back(engine):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest -m integration tests/test_execute.py -v`
+Run: `.venv/bin/python -m pytest -m integration tests/test_execute.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'edutap.db_definitions.execute'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1955,7 +1967,7 @@ def _command_apply(args: argparse.Namespace) -> int:
 
 - [ ] **Step 5: Run the tests**
 
-Run: `uv run pytest -m integration tests/test_execute.py -v && uv run pytest -v && make lint`
+Run: `.venv/bin/python -m pytest -m integration tests/test_execute.py -v && .venv/bin/python -m pytest -v && make lint`
 Expected: all pass
 
 - [ ] **Step 6: Commit**
@@ -2025,7 +2037,7 @@ def test_readme_mentions_no_flag_the_cli_does_not_have():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_docs.py -v`
+Run: `.venv/bin/python -m pytest tests/test_docs.py -v`
 Expected: FAIL — `docs/reference.md` does not exist.
 
 - [ ] **Step 3: Write the documentation**
@@ -2087,12 +2099,12 @@ the "Status: planned" line — it is no longer planned.
 
 - [ ] **Step 5: Build the docs and run the tests**
 
-Run: `uv pip install -e ".[docs]" && uv run sphinx-build -W docs docs/_build/html && uv run pytest -v`
+Run: `uv pip install -e ".[docs]" && .venv/bin/python -m sphinx -W docs docs/_build/html && .venv/bin/python -m pytest -v`
 Expected: docs build without warnings, all tests pass
 
 - [ ] **Step 6: Full verification**
 
-Run: `make lint && make test-local && make test-integration && uv run tox -e py312`
+Run: `make lint && make test-local && make test-integration && uvx tox -e py312`
 Expected: everything green
 
 - [ ] **Step 7: Commit**
@@ -2109,7 +2121,7 @@ git commit -m "docs: add the Sphinx documentation and align the README"
 - [ ] `make lint` clean (ruff check, ruff format, ty)
 - [ ] `make test-local` green without Docker running
 - [ ] `make test-integration` green with Docker running
-- [ ] `uv run tox` green over 3.12, 3.13, 3.14
+- [ ] `uvx tox` green over 3.12, 3.13, 3.14
 - [ ] `edutap-dbdef create` output is byte-identical across two runs
 - [ ] `edutap-dbdef check` exits 1 on a missing table and 0 after `apply`
 - [ ] `sphinx-build -W` builds without warnings
