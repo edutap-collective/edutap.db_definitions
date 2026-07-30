@@ -26,6 +26,17 @@ edutap-dbdef create [--packages PACKAGES] [--exclude EXCLUDE]
 | `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header |
 | `--timestamp` | flag | off | add a `-- generated: <ISO 8601 UTC timestamp>` header line |
 
+The document is rendered by SQLAlchemy's own schema emitter, so it contains
+every object the tables need, not only the tables themselves: enum types,
+explicit sequences, indexes, and the `ALTER TABLE ... ADD CONSTRAINT` of a
+deferred foreign key.
+It is repeatable: `CREATE TABLE`, `CREATE INDEX`, and `CREATE SEQUENCE` carry
+`IF NOT EXISTS`, and the statements PostgreSQL has no `IF NOT EXISTS` form
+for — `CREATE TYPE` and `ALTER TABLE ... ADD CONSTRAINT` — are wrapped in a
+`DO $$ ... EXCEPTION WHEN duplicate_object THEN NULL; END $$;` block.
+That block swallows exactly `duplicate_object`; any other error still aborts
+the surrounding transaction.
+
 Two runs with the same package selection produce a byte-identical document
 unless `--timestamp` is given — the header records package versions instead,
 which is what makes a diff in a deploy repository meaningful.

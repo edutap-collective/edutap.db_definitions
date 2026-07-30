@@ -1,10 +1,14 @@
 import pytest
 from sqlalchemy import inspect
-from tests.conftest import make_definition
 
 from edutap.db_definitions.cli import main
 from edutap.db_definitions.execute import apply_sql
 from edutap.db_definitions.render import render_create
+from tests.conftest import (
+    make_definition,
+    make_definition_with_deferred_foreign_key,
+    make_definition_with_enum_and_sequence,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -17,12 +21,17 @@ def test_apply_creates_the_tables(engine):
     assert "table_a" in inspect(engine).get_table_names()
 
 
-def test_multi_column_table_counts_as_one_statement(engine):
-    # Multi-line CREATE TABLE spanning several lines should count as 1 statement
-    sql = render_create([make_definition("pkg.a", "table_a")])
+def test_a_dollar_quoted_block_counts_as_one_statement(engine):
+    """A guarded type creation is one statement, not one per inner semicolon.
+
+    ``DO $$ BEGIN ... EXCEPTION ...; END $$;`` carries semicolons inside its
+    body. Counting them would report four statements where three ran.
+    """
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
     url = str(engine.url.render_as_string(hide_password=False))
     executed = apply_sql(sql, url)
-    assert executed == 1
+    # the guarded CREATE TYPE, the CREATE SEQUENCE and the CREATE TABLE
+    assert executed == 3
 
 
 def test_multiple_tables_count_correctly(engine):
@@ -48,6 +57,28 @@ def test_apply_is_repeatable(engine):
     apply_sql(sql, url)
     apply_sql(sql, url)
     assert "table_a" in inspect(engine).get_table_names()
+
+
+def test_a_document_with_a_type_and_a_sequence_applies_twice(engine):
+    """The spec promises a repeatable file, and not only for tables.
+
+    A second apply must not fail with "type provider already exists" or
+    "relation provider_thing_id_seq already exists".
+    """
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
+    url = str(engine.url.render_as_string(hide_password=False))
+    apply_sql(sql, url)
+    apply_sql(sql, url)
+    assert "provider_thing" in inspect(engine).get_table_names()
+
+
+def test_a_document_with_a_deferred_foreign_key_applies_twice(engine):
+    sql = render_create([make_definition_with_deferred_foreign_key("pkg.alter")])
+    url = str(engine.url.render_as_string(hide_password=False))
+    apply_sql(sql, url)
+    apply_sql(sql, url)
+    constraints = inspect(engine).get_foreign_keys("second")
+    assert [c["name"] for c in constraints] == ["fk_second_first_id_first"]
 
 
 def test_cli_apply_reads_the_file(engine, tmp_path, monkeypatch):

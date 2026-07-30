@@ -3,7 +3,16 @@
 from dataclasses import dataclass
 
 import pytest
-from sqlalchemy import Column, ForeignKey, Integer, MetaData, String, Table
+from sqlalchemy import (
+    Column,
+    Enum,
+    ForeignKey,
+    Integer,
+    MetaData,
+    Sequence,
+    String,
+    Table,
+)
 
 from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
 
@@ -53,6 +62,47 @@ def make_definition_with_foreign_key(name: str) -> SchemaDefinition:
         metadata,
         Column("id", Integer, primary_key=True),
         Column("parent_id", Integer, ForeignKey(parent.c.id), nullable=False),
+    )
+    return SchemaDefinition(name=name, metadata=metadata)
+
+
+def make_definition_with_enum_and_sequence(name: str) -> SchemaDefinition:
+    """Build a definition using schema objects that are not tables or indexes.
+
+    A native PostgreSQL enum type and an explicit sequence both need their own
+    ``CREATE`` statement before the table that uses them. `edutap.pass_builder`
+    uses native enum types, so this is the shape of a real target package.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    sequence = Sequence("provider_thing_id_seq")
+    Table(
+        "provider_thing",
+        metadata,
+        Column(
+            "id",
+            Integer,
+            sequence,
+            server_default=sequence.next_value(),
+            primary_key=True,
+        ),
+        Column("provider", Enum("apple", "google", name="provider"), nullable=False),
+    )
+    return SchemaDefinition(name=name, metadata=metadata)
+
+
+def make_definition_with_deferred_foreign_key(name: str) -> SchemaDefinition:
+    """Build a definition whose foreign key is added by a separate ALTER TABLE."""
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table("first", metadata, Column("id", Integer, primary_key=True))
+    Table(
+        "second",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column(
+            "first_id",
+            Integer,
+            ForeignKey("first.id", use_alter=True, name="fk_second_first_id_first"),
+        ),
     )
     return SchemaDefinition(name=name, metadata=metadata)
 

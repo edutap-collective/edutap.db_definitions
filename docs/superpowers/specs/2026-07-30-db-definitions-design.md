@@ -169,6 +169,14 @@ constraints. Rendered against the PostgreSQL dialect **without a connection**, a
 sorted deterministically so that two runs produce byte-identical files and a diff
 in the deploy repository stays meaningful.
 
+Rendering uses **SQLAlchemy's own emitter** — `create_mock_engine` plus
+`metadata.create_all(engine, checkfirst=False)` — not a hand-rolled loop over
+`CreateTable`/`CreateIndex`. A schema is more than tables: native enum types,
+explicit sequences and the `ALTER TABLE … ADD CONSTRAINT` of a deferred
+(`use_alter`) foreign key all need their own statement, in dependency order.
+`create_all` produces them; a hand-rolled loop silently drops them, which would
+also make `create` disagree with `diff`, whose Alembic renderer does emit them.
+
 ```sql
 -- edutap-dbdef create
 -- packages: edutap.data_provider (0.1.0), edutap.pass_builder (0.1.0)
@@ -183,9 +191,24 @@ COMMIT;
 The header records tool and package versions, so it stays traceable which state a
 file came from. A **timestamp is opt-in** (`--timestamp`): by default the output
 must be byte-identical across runs, and a timestamp would defeat exactly that — the
-package versions carry the provenance instead. `IF NOT EXISTS` makes the file
-repeatable. One transaction around everything: PostgreSQL runs DDL transactionally,
-so an abort leaves no half-built schema.
+package versions carry the provenance instead. One transaction around everything:
+PostgreSQL runs DDL transactionally, so an abort leaves no half-built schema.
+
+`IF NOT EXISTS` makes the file repeatable — for tables, indexes and sequences.
+PostgreSQL has **no `IF NOT EXISTS` form** for `CREATE TYPE`, nor for the
+`ALTER TABLE … ADD CONSTRAINT` a deferred foreign key renders as. Those statements
+are therefore wrapped in
+
+```sql
+DO $$ BEGIN
+    CREATE TYPE provider AS ENUM ('apple', 'google');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+```
+
+so that the repeatability promise holds for the whole document and not only for
+its tables. The block swallows exactly `duplicate_object`; every other error still
+aborts the transaction.
 
 ### `diff`
 
@@ -222,8 +245,9 @@ through the file is the review point, deliberately.
 
 ### Output shape
 
-`create` and `diff` write **one** file across all packages. `--split` produces one
-file per package, for deployments that apply packages separately.
+`create` and `diff` write **one** file across all packages. `create --split`
+produces one file per package, for deployments that apply packages separately;
+`diff` has no `--split`, because an `ALTER` set is only reviewable as a whole.
 
 ## Package selection
 
@@ -336,7 +360,9 @@ Diataxis, including a how-to for the LMU deploy path.
   calls at app start. Until then those services still create their own tables,
   which is exactly what the security rule forbids — so the conversion is the
   precondition for the rule actually holding.
-* **Sequence and enum handling** beyond tables, once a package needs it.
+* **Schema-qualified tables.** Everything is rendered into the connection's
+  default schema; a package that puts tables into a named schema is not supported
+  yet and is not rejected either.
 
 ## Open points
 

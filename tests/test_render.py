@@ -1,6 +1,10 @@
-from tests.conftest import make_definition, make_definition_with_foreign_key
-
 from edutap.db_definitions.render import render_create, render_create_split
+from tests.conftest import (
+    make_definition,
+    make_definition_with_deferred_foreign_key,
+    make_definition_with_enum_and_sequence,
+    make_definition_with_foreign_key,
+)
 
 
 def test_renders_create_table_if_not_exists():
@@ -71,6 +75,43 @@ def test_indexes_are_rendered_after_their_table():
     sql = render_create([SchemaDefinition(name="pkg.idx", metadata=metadata)])
     assert "CREATE INDEX IF NOT EXISTS ix_thing_owner" in sql
     assert sql.index("CREATE TABLE IF NOT EXISTS thing") < sql.index("CREATE INDEX")
+
+
+def test_a_native_enum_type_is_created_before_the_table_that_uses_it():
+    """A table is not the only schema object a package needs created.
+
+    `edutap.pass_builder` uses native PostgreSQL enum types. Rendering only
+    ``CREATE TABLE`` leaves ``provider provider NOT NULL`` referring to a type
+    that does not exist, and the file fails in the privileged apply step.
+    """
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
+    assert "CREATE TYPE provider AS ENUM ('apple', 'google');" in sql
+    assert sql.index("CREATE TYPE provider") < sql.index(
+        "CREATE TABLE IF NOT EXISTS provider_thing"
+    )
+
+
+def test_a_type_creation_is_wrapped_so_the_document_stays_repeatable():
+    """PostgreSQL has no ``CREATE TYPE IF NOT EXISTS``; a DO block replaces it."""
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
+    assert "DO $$ BEGIN" in sql
+    assert "EXCEPTION WHEN duplicate_object THEN NULL;" in sql
+
+
+def test_an_explicit_sequence_is_created_and_the_column_keeps_its_default():
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
+    assert "CREATE SEQUENCE IF NOT EXISTS provider_thing_id_seq;" in sql
+    assert "nextval('provider_thing_id_seq'" in sql
+
+
+def test_a_deferred_foreign_key_is_rendered_as_an_alter_table():
+    """``use_alter=True`` moves the constraint out of the CREATE TABLE body.
+
+    Rendering only ``CreateTable`` dropped it silently, leaving a table with no
+    foreign key at all.
+    """
+    sql = render_create([make_definition_with_deferred_foreign_key("pkg.alter")])
+    assert "ADD CONSTRAINT fk_second_first_id_first FOREIGN KEY(first_id)" in sql
 
 
 def test_split_returns_one_document_per_package():

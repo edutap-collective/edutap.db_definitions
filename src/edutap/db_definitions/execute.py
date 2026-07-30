@@ -33,10 +33,38 @@ def apply_sql(sql: str, url: str, dry_run: bool = False) -> int:
     return _count_schema_statements(sql)
 
 
+def _split_statements(sql: str) -> list[str]:
+    """Split a document on statement boundaries, ignoring dollar-quoted bodies.
+
+    A guarded type creation (``DO $$ BEGIN ... END $$;``) carries semicolons
+    inside its body. Splitting on every semicolon would count one such block as
+    several statements.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    inside_dollar_quote = False
+    index = 0
+    while index < len(sql):
+        if sql.startswith("$$", index):
+            inside_dollar_quote = not inside_dollar_quote
+            current.append("$$")
+            index += 2
+            continue
+        character = sql[index]
+        if character == ";" and not inside_dollar_quote:
+            statements.append("".join(current))
+            current = []
+        else:
+            current.append(character)
+        index += 1
+    statements.append("".join(current))
+    return statements
+
+
 def _count_schema_statements(sql: str) -> int:
     """Count schema statements, excluding directives and comments."""
     count = 0
-    for statement in sql.split(";"):
+    for statement in _split_statements(sql):
         # Remove comments from each line and strip whitespace
         lines = []
         for line in statement.splitlines():
