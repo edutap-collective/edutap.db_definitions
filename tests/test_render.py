@@ -128,6 +128,24 @@ def test_a_type_creation_is_wrapped_so_the_document_stays_repeatable():
     assert "EXCEPTION WHEN duplicate_object THEN NULL;" in sql
 
 
+def test_a_type_is_created_once_and_before_every_package_section():
+    """SQLAlchemy scopes type creation to the metadata, not to a table subset.
+
+    Rendering package by package from the merged metadata therefore reports every
+    type for every package. Repeating them would tell a reviewer that one package
+    creates another package's type, so they go into one section of their own.
+    """
+    sql = render_create(
+        [
+            make_definition_with_enum_and_sequence("pkg.enum"),
+            make_definition("pkg.plain", "table_plain"),
+        ]
+    )
+    assert sql.count("CREATE TYPE provider") == 1
+    assert sql.index("-- ===== types =====") < sql.index("-- ===== pkg.enum =====")
+    assert sql.index("CREATE TYPE provider") < sql.index("CREATE TABLE IF NOT EXISTS")
+
+
 def test_an_explicit_sequence_is_created_and_the_column_keeps_its_default():
     sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
     assert "CREATE SEQUENCE IF NOT EXISTS provider_thing_id_seq;" in sql

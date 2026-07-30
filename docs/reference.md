@@ -30,6 +30,11 @@ The document is rendered by SQLAlchemy's own schema emitter, so it contains
 every object the tables need, not only the tables themselves: enum types,
 explicit sequences, indexes, and the `ALTER TABLE ... ADD CONSTRAINT` of a
 deferred foreign key.
+Types are emitted once, in a leading `-- ===== types =====` section, before the
+per-package `-- ===== <package> =====` sections: a type belongs to the schema
+rather than to one package.
+With `--split`, every file repeats the type creation so that each file can be
+applied on its own.
 It is repeatable: `CREATE TABLE`, `CREATE INDEX`, and `CREATE SEQUENCE` carry
 `IF NOT EXISTS`, and the statements PostgreSQL has no `IF NOT EXISTS` form
 for — `CREATE TYPE` and `ALTER TABLE ... ADD CONSTRAINT` — are wrapped in a

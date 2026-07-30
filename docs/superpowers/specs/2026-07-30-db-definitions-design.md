@@ -202,12 +202,21 @@ also make `create` disagree with `diff`, whose Alembic renderer does emit them.
 -- edutap-dbdef create
 -- packages: edutap.data_provider (0.1.0), edutap.pass_builder (0.1.0)
 BEGIN;
-SET ROLE edutap_ddl;          -- only with --ddl-role
+SET ROLE edutap_ddl;          -- or a NOTE line without --ddl-role
+-- ===== types =====
+DO $$ BEGIN CREATE TYPE provider AS ENUM (…); EXCEPTION … END $$;
 -- ===== edutap.data_provider =====
 CREATE TABLE IF NOT EXISTS person_view ( … );
 …
 COMMIT;
 ```
+
+Types come first, in one section of their own: a type belongs to the schema
+rather than to a package — SQLAlchemy scopes its creation to the `MetaData`, not
+to a single table — and repeating it per package section would suggest that one
+package creates another package's type. `create --split` repeats them in each
+file, which the guarded blocks make harmless, because each file has to stand
+alone.
 
 The header records tool and package versions, so it stays traceable which state a
 file came from. A **timestamp is opt-in** (`--timestamp`): by default the output

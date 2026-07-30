@@ -42,11 +42,13 @@ _REPEATABLE_PREFIXES: tuple[tuple[str, str], ...] = (
 )
 """Statements PostgreSQL itself can make repeatable, via ``IF NOT EXISTS``."""
 
-_GUARDED_PREFIXES: tuple[str, ...] = (
-    "CREATE TYPE ",
-    "CREATE DOMAIN ",
-    "ALTER TABLE ",
-)
+_TYPE_PREFIXES: tuple[str, ...] = ("CREATE TYPE ", "CREATE DOMAIN ")
+"""Statements creating a type, which belongs to the schema rather than a table."""
+
+_TYPES_SECTION = "-- ===== types ====="
+"""Section comment for the types, which no single package owns."""
+
+_GUARDED_PREFIXES: tuple[str, ...] = (*_TYPE_PREFIXES, "ALTER TABLE ")
 """Statements with no ``IF NOT EXISTS`` form, wrapped in a DO block instead.
 
 PostgreSQL has no ``CREATE TYPE IF NOT EXISTS``, and no such form for the
@@ -114,8 +116,8 @@ def _shared_naming_convention(definitions: Sequence[SchemaDefinition]) -> Mappin
     return dict(NAMING_CONVENTION)
 
 
-def _emit(metadata: MetaData, tables: Sequence[Table]) -> list[str]:
-    """Return the DDL statements SQLAlchemy itself emits for these tables.
+def _emit(metadata: MetaData, tables: Sequence[Table]) -> tuple[list[str], list[str]]:
+    """Return the DDL SQLAlchemy itself emits for these tables, types apart.
 
     Uses SQLAlchemy's own schema generator through a mock engine instead of
     compiling ``CreateTable``/``CreateIndex`` by hand. Hand-rolled emission
@@ -123,6 +125,12 @@ def _emit(metadata: MetaData, tables: Sequence[Table]) -> list[str]:
     sequences and the ``ALTER TABLE ... ADD CONSTRAINT`` of a deferred foreign
     key. ``create_all`` produces all of them, in dependency order, and is the
     same mechanism the ``metadata.create_all`` calls this tool replaces used.
+
+    Type creation comes back separately because SQLAlchemy scopes it to the
+    *metadata*, not to the table subset: every ``create_all`` on the merged
+    metadata emits every enum type of every selected package. Repeating those in
+    each package's section would tell a reviewer that one package creates another
+    package's type, so the caller places them once instead.
     """
     statements: list[str] = []
 
@@ -131,7 +139,9 @@ def _emit(metadata: MetaData, tables: Sequence[Table]) -> list[str]:
 
     engine = create_mock_engine(_MOCK_URL, dump)
     metadata.create_all(engine, tables=list(tables), checkfirst=False)
-    return [_repeatable(statement) for statement in statements]
+    types = [_repeatable(s) for s in statements if s.upper().startswith(_TYPE_PREFIXES)]
+    rest = [_repeatable(s) for s in statements if not s.upper().startswith(_TYPE_PREFIXES)]
+    return types, rest
 
 
 def _repeatable(statement: str) -> str:
@@ -146,17 +156,20 @@ def _repeatable(statement: str) -> str:
     return statement + ";"
 
 
-def _render_package(merged: MetaData, definition: SchemaDefinition) -> list[str]:
+def _render_package(merged: MetaData, definition: SchemaDefinition) -> tuple[list[str], list[str]]:
     """Render one package's section, in the merged metadata's dependency order.
 
     ``merged.sorted_tables`` is the global dependency order: a table comes after
     everything it references, across package boundaries too. Taking this
     package's slice of that order keeps the per-package sections a reviewer
     reads by while the statements inside them stay correctly ordered.
+
+    Returns the type statements separately, for the caller to place once.
     """
     owned = set(definition.metadata.tables)
     tables = [table for table in merged.sorted_tables if table.key in owned]
-    return [f"-- ===== {definition.name} =====", *_emit(merged, tables)]
+    types, rest = _emit(merged, tables)
+    return types, [f"-- ===== {definition.name} =====", *rest]
 
 
 def package_provenance(definitions: Sequence[SchemaDefinition]) -> str:
@@ -212,10 +225,17 @@ def render_create(
     """Render the baseline DDL of all definitions into one SQL document."""
     _require_definitions(definitions)
     merged = merged_metadata(definitions)
-    body: list[str] = []
+    types: list[str] = []
+    sections: list[str] = []
     for definition in definitions:
-        body.extend(_render_package(merged, definition))
-    return document(_header(definitions, timestamp), body, ddl_role)
+        package_types, package_body = _render_package(merged, definition)
+        # A type belongs to the schema, not to a package, and SQLAlchemy reports
+        # all of the metadata's types for every package. One copy, before the
+        # first table that could use it.
+        types.extend(statement for statement in package_types if statement not in types)
+        sections.extend(package_body)
+    preamble = [_TYPES_SECTION, *types] if types else []
+    return document(_header(definitions, timestamp), [*preamble, *sections], ddl_role)
 
 
 def render_create_split(
@@ -223,14 +243,19 @@ def render_create_split(
     ddl_role: str | None = None,
     timestamp: str | None = None,
 ) -> dict[str, str]:
-    """Render one SQL document per package."""
+    """Render one SQL document per package.
+
+    Each file has to stand on its own — a deployment applies them separately —
+    so every file repeats the type creation. That is safe: the guarded blocks
+    make a type that already exists a no-op.
+    """
     _require_definitions(definitions)
     merged = merged_metadata(definitions)
-    return {
-        definition.name: document(
-            _header([definition], timestamp),
-            _render_package(merged, definition),
-            ddl_role,
+    documents: dict[str, str] = {}
+    for definition in definitions:
+        types, body = _render_package(merged, definition)
+        preamble = [_TYPES_SECTION, *types] if types else []
+        documents[definition.name] = document(
+            _header([definition], timestamp), [*preamble, *body], ddl_role
         )
-        for definition in definitions
-    }
+    return documents
