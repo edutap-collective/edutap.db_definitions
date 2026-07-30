@@ -1944,7 +1944,7 @@ def apply_sql(sql: str, url: str, dry_run: bool = False) -> int:
     # comments are not statements, and a multi-line CREATE TABLE counts once
     # (corrected during execution 2026-07-30 — the naive per-line count reported
     # three statements for a document that created one table).
-    return _count_statements(sql)
+    return _count_schema_statements(sql)
 ```
 
 - [ ] **Step 4: Wire the `apply` subcommand**
