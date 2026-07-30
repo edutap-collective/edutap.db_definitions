@@ -23,7 +23,7 @@ edutap-dbdef create [--packages PACKAGES] [--exclude EXCLUDE]
 | `--exclude` | comma-separated names | none | skip these packages |
 | `--out` | path | none (stdout) | write the document to this file |
 | `--split` | directory path | none | write one file per package into this directory, named `<package>.sql`, instead of one combined file |
-| `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header |
+| `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header; without it the header carries a `-- NOTE: generated without --ddl-role; ...` line instead and the command repeats that note on standard error |
 | `--timestamp` | flag | off | add a `-- generated: <ISO 8601 UTC timestamp>` header line |
 
 The document is rendered by SQLAlchemy's own schema emitter, so it contains
@@ -61,7 +61,7 @@ edutap-dbdef diff [--packages PACKAGES] [--exclude EXCLUDE]
 | `--packages` | comma-separated names | all installed | compare only these packages |
 | `--exclude` | comma-separated names | none | skip these packages |
 | `--out` | path | none (stdout) | write the document to this file |
-| `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header |
+| `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header; without it the header carries a `-- NOTE: generated without --ddl-role; ...` line instead and the command repeats that note on standard error |
 | `--allow-destructive` | flag | off | emit `DROP TABLE`/`DROP COLUMN`/`DROP CONSTRAINT`/`DROP INDEX` statements uncommented instead of commented out |
 
 Needs a database connection, configured as described under
@@ -128,6 +128,29 @@ On success it prints `Executed <N> statements.`, counting schema statements
 only — `BEGIN`, `COMMIT`, `SET ROLE`, and comments are not counted.
 With `--dry-run` it still reads `FILE`, but does not open a database
 connection; it prints `Dry run, nothing executed.` and exits `0`.
+
+(ddl-role)=
+
+## The `--ddl-role` header
+
+`create` and `diff` share one document header, so `--ddl-role` behaves
+identically in both.
+
+The role name must be a plain PostgreSQL identifier
+(`^[A-Za-z_][A-Za-z0-9_$]*$`); anything else is refused with a `RenderError`
+rather than interpolated into a file that a privileged role will apply.
+The name is emitted through the PostgreSQL identifier preparer, so a
+mixed-case role keeps its case (`--ddl-role Edutap_DDL` renders
+`SET ROLE "Edutap_DDL";`) instead of silently folding to lower case and
+producing a different owner.
+
+Omitting the flag is never silent: the header carries
+
+```sql
+-- NOTE: generated without --ddl-role; objects will be owned by whichever user applies this file.
+```
+
+and the same note goes to standard error when the document is generated.
 
 (connection-settings)=
 
@@ -204,6 +227,12 @@ convention every package's `MetaData` must copy — see {doc}`how-to`.
 : the installed definitions cannot be ordered, raised by `load_definitions()`
   when `requires` describes a dependency cycle between packages.
   Not caught by the CLI: it surfaces as an uncaught exception.
+
+`edutap.db_definitions.render.RenderError`
+: the requested document cannot be rendered — no package is selected, or
+  `--ddl-role` is not a valid PostgreSQL identifier.
+  Caught by `main()`: it prints the message to standard error and returns
+  exit code `1`.
 
 `edutap.db_definitions.contract.ContractError`
 : the selected packages cannot share one database, raised by

@@ -1,4 +1,6 @@
-from edutap.db_definitions.render import render_create, render_create_split
+import pytest
+
+from edutap.db_definitions.render import RenderError, render_create, render_create_split
 from tests.conftest import (
     make_cross_package_definitions,
     make_definition,
@@ -45,6 +47,33 @@ def test_ddl_role_adds_a_set_role_header():
 
 def test_without_ddl_role_there_is_no_set_role():
     assert "SET ROLE" not in render_create([make_definition("pkg.a", "table_a")])
+
+
+def test_without_ddl_role_the_document_says_so():
+    """Silence is indistinguishable from a forgotten flag.
+
+    A reviewer reading a committed schema.sql cannot tell "deliberately no
+    role" from "forgot --ddl-role", and the deployment's default-privilege
+    grants silently do not apply to whatever the applying user then owns.
+    """
+    sql = render_create([make_definition("pkg.a", "table_a")])
+    assert "-- NOTE: generated without --ddl-role;" in sql
+    assert "owned by whichever user applies this file" in sql
+
+
+def test_a_ddl_role_that_is_not_an_identifier_is_rejected():
+    """The role name lands in a file destined for a superuser."""
+    with pytest.raises(RenderError, match="not a valid PostgreSQL identifier"):
+        render_create(
+            [make_definition("pkg.a", "table_a")],
+            ddl_role="edutap_ddl; DROP TABLE table_a",
+        )
+
+
+def test_a_mixed_case_ddl_role_keeps_its_case():
+    """Unquoted identifiers fold to lower case, silently producing another owner."""
+    sql = render_create([make_definition("pkg.a", "table_a")], ddl_role="Edutap_DDL")
+    assert 'SET ROLE "Edutap_DDL";' in sql
 
 
 def test_each_package_gets_a_section_comment():

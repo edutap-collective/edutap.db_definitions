@@ -1,14 +1,37 @@
 """Render baseline DDL from package metadata, without touching a database."""
 
+import re
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 
 from sqlalchemy import MetaData, Table, create_mock_engine
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import DDLElement
 
 from .definition import NAMING_CONVENTION, SchemaDefinition
 
 _MOCK_URL = "postgresql+psycopg://"
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+_PREPARER = postgresql.dialect().identifier_preparer
+
+_NO_ROLE_NOTE = (
+    "-- NOTE: generated without --ddl-role; objects will be owned by whichever "
+    "user applies this file."
+)
+"""Header line that makes a missing ``--ddl-role`` visible.
+
+Applied through the LMU deployment as `postgres`, a file without a role header
+produces `postgres`-owned tables, and the deployment's default-privilege grants
+silently do not apply. A reviewer of a committed ``schema.sql`` must be able to
+tell "deliberately no role" from "forgot the flag".
+"""
+
+
+class RenderError(Exception):
+    """The requested SQL document cannot be rendered."""
+
 
 _REPEATABLE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "),
@@ -121,15 +144,34 @@ def _render_package(merged: MetaData, definition: SchemaDefinition) -> list[str]
     return [f"-- ===== {definition.name} =====", *_emit(merged, tables)]
 
 
+def package_provenance(definitions: Sequence[SchemaDefinition]) -> str:
+    """Return the ``name (version)`` list a document's header records."""
+    return ", ".join(f"{d.name} ({_package_version(d.name)})" for d in definitions)
+
+
 def _header(definitions: Sequence[SchemaDefinition], timestamp: str | None) -> list[str]:
-    packages = ", ".join(f"{d.name} ({_package_version(d.name)})" for d in definitions)
-    lines = ["-- edutap-dbdef create", f"-- packages: {packages}"]
+    lines = ["-- edutap-dbdef create", f"-- packages: {package_provenance(definitions)}"]
     if timestamp:
         lines.append(f"-- generated: {timestamp}")
     return lines
 
 
-def _document(
+def _role_statement(ddl_role: str) -> str:
+    """Return the ``SET ROLE`` line for a validated, correctly quoted role name.
+
+    Two distinct harms are prevented here. The obvious one is injection: this
+    string ends up in a file that a superuser applies. The quiet one is case
+    folding — an unquoted ``Edutap_DDL`` becomes ``edutap_ddl``, so the objects
+    end up owned by a different role than the one asked for, with no error.
+    """
+    if not _IDENTIFIER.match(ddl_role):
+        raise RenderError(
+            f"{ddl_role!r} is not a valid PostgreSQL identifier and cannot be used as a DDL role."
+        )
+    return f"SET ROLE {_PREPARER.quote(ddl_role)};"
+
+
+def document(
     header_lines: Sequence[str],
     body: Sequence[str],
     ddl_role: str | None,
@@ -141,8 +183,7 @@ def _document(
     only one of the two commands.
     """
     lines = [*header_lines, "BEGIN;"]
-    if ddl_role:
-        lines.append(f"SET ROLE {ddl_role};")
+    lines.append(_role_statement(ddl_role) if ddl_role else _NO_ROLE_NOTE)
     lines.extend(body)
     lines.append("COMMIT;")
     return "\n".join(lines) + "\n"
@@ -158,7 +199,7 @@ def render_create(
     body: list[str] = []
     for definition in definitions:
         body.extend(_render_package(merged, definition))
-    return _document(_header(definitions, timestamp), body, ddl_role)
+    return document(_header(definitions, timestamp), body, ddl_role)
 
 
 def render_create_split(
@@ -169,7 +210,7 @@ def render_create_split(
     """Render one SQL document per package."""
     merged = merged_metadata(definitions)
     return {
-        definition.name: _document(
+        definition.name: document(
             _header([definition], timestamp),
             _render_package(merged, definition),
             ddl_role,

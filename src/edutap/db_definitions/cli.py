@@ -67,8 +67,23 @@ def _load_checked(args: argparse.Namespace):
     return definitions
 
 
+def _warn_without_ddl_role(args: argparse.Namespace) -> None:
+    """Say on stderr what the document says in its header.
+
+    Whoever generates a file sees this; whoever reviews it later sees the header
+    line. Neither should have to guess whether the flag was left out on purpose.
+    """
+    if not args.ddl_role:
+        sys.stderr.write(
+            "NOTE: generated without --ddl-role; objects will be owned by whichever "
+            "user applies this file, and default-privilege grants for a DDL role "
+            "will not apply to them.\n"
+        )
+
+
 def _command_create(args: argparse.Namespace) -> int:
     definitions = _load_checked(args)
+    _warn_without_ddl_role(args)
     stamp = datetime.now(tz=UTC).isoformat(timespec="seconds") if args.timestamp else None
     if args.split:
         args.split.mkdir(parents=True, exist_ok=True)
@@ -93,6 +108,7 @@ def _connect():
 
 def _command_diff(args: argparse.Namespace) -> int:
     definitions = _load_checked(args)
+    _warn_without_ddl_role(args)
     engine = _connect()
     try:
         with engine.connect() as connection:

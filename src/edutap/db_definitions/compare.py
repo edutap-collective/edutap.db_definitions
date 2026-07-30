@@ -11,7 +11,7 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
 
 from .definition import SchemaDefinition
-from .render import merged_metadata
+from .render import document, merged_metadata, package_provenance
 
 _DESTRUCTIVE = ("DROP TABLE", "DROP COLUMN", "DROP CONSTRAINT", "DROP INDEX")
 
@@ -101,14 +101,13 @@ def render_diff(
     for operation in _leaf_ops(upgrade_ops):
         operations.invoke(operation)
 
-    lines = [
+    header = [
         "-- edutap-dbdef diff",
+        f"-- packages: {package_provenance(definitions)}",
         "-- Limits: renames appear as drop + add, some type changes render incompletely,",
         "-- and data migrations are out of scope. Read this before applying it.",
-        "BEGIN;",
     ]
-    if ddl_role:
-        lines.append(f"SET ROLE {ddl_role};")
+    body: list[str] = []
     # Operations.invoke() writes one full (possibly multi-line, e.g. CREATE TABLE)
     # statement per call, each already terminated with a semicolon and separated
     # from the next by a blank line. Split on statement boundaries, not physical
@@ -126,8 +125,7 @@ def render_diff(
                 f"-- DESTRUCTIVE, enable with --allow-destructive: {stmt_line}"
                 for stmt_line in statement.splitlines()
             )
-            lines.append(commented)
+            body.append(commented)
         else:
-            lines.append(statement)
-    lines.append("COMMIT;")
-    return "\n".join(lines) + "\n"
+            body.append(statement)
+    return document(header, body, ddl_role)

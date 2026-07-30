@@ -106,6 +106,9 @@ file — `SET ROLE` to one's own role is a no-op, and a superuser may assume
 any role.
 Without that line, `run_sql` leaves the tables owned by `postgres`, and the
 deployment's default-privilege grants silently do not apply to them.
+A file generated without the flag says so in its header — if you find a
+`-- NOTE: generated without --ddl-role; ...` line in a `schema.sql` destined
+for this deployment, regenerate it with the flag.
 ```
 
 Review `schema.sql`, then commit it into the deploy repository.

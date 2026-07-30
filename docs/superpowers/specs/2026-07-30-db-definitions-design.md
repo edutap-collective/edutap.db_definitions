@@ -66,10 +66,23 @@ table**: `ALTER DEFAULT PRIVILEGES FOR ROLE edutap_ddl` only grants on objects t
 as an open point in the ops design (`ansible-app-server`,
 `docs/superpowers/specs/2026-07-14-edutap-db-roles-migrations-design.md`).
 
-Generated files therefore carry an optional role header: with `--ddl-role edutap_ddl`
+Generated files therefore carry a role header: with `--ddl-role edutap_ddl`
 the file starts with `SET ROLE edutap_ddl;`. Objects are then owned by that role no
 matter which user applies the file (`SET ROLE` to one's own role is a no-op; a
-superuser may assume any role). Without the option there is no header.
+superuser may assume any role).
+
+**Without the option the file says so**, in the same slot:
+`-- NOTE: generated without --ddl-role; objects will be owned by whichever user
+applies this file.`, and the command repeats it on stderr. Silence there is not
+neutral: a reviewer of a committed `schema.sql` cannot otherwise distinguish
+"deliberately no role" from "forgot the flag", and the difference decides whether
+the deployment's default-privilege grants apply at all.
+
+The role name is validated against `^[A-Za-z_][A-Za-z0-9_$]*$` and emitted through
+the dialect's identifier preparer. Both halves matter: the file is destined for a
+superuser, so interpolating an unvalidated string is an injection; and an unquoted
+`Edutap_DDL` would fold to `edutap_ddl` and silently produce a different owner
+than the one asked for.
 
 Grants themselves are **not** generated. Role names and the privilege matrix are
 deployment policy, and the deployment's `grants.sql` solves it structurally better:
