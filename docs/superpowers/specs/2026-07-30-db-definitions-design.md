@@ -243,7 +243,10 @@ be forced to install every package.
 Only `diff`, `check` and `apply` connect. Configuration through pydantic-settings
 with double aliases: `EDUTAP_DBDEF_*` **or** the standard `PG*` variables
 (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`,
-`PGSSLROOTCERT`), plus an optional `--dsn`. This matches what the LMU ops runner
+`PGSSLROOTCERT`), plus `EDUTAP_DBDEF_DSN` (or `DATABASE_URL`) for a ready-made URL
+that overrides the individual fields. There is deliberately no `--dsn` command line
+flag: the environment variable covers the same need, and connection details on a
+command line end up in shell history and process listings. This matches what the LMU ops runner
 already passes to its migration container, including
 `PGTARGETSESSIONATTRS=read-write` and `verify-full` against the internal CA.
 

@@ -1,0 +1,205 @@
+# Reference
+
+Command name: `edutap-dbdef`.
+Package name: `edutap.db_definitions`.
+Entry-point group a package uses to announce its tables: `edutap.db_definitions`.
+
+## Commands
+
+### `create`
+
+Renders the baseline DDL of the selected packages into one SQL document,
+against the PostgreSQL dialect, without connecting to a database.
+
+```text
+edutap-dbdef create [--packages PACKAGES] [--exclude EXCLUDE]
+                     [--out OUT] [--split SPLIT]
+                     [--ddl-role DDL_ROLE] [--timestamp]
+```
+
+| Flag | Argument | Default | Meaning |
+|---|---|---|---|
+| `--packages` | comma-separated names | all installed | render only these packages |
+| `--exclude` | comma-separated names | none | skip these packages |
+| `--out` | path | none (stdout) | write the document to this file |
+| `--split` | directory path | none | write one file per package into this directory, named `<package>.sql`, instead of one combined file |
+| `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header |
+| `--timestamp` | flag | off | add a `-- generated: <ISO 8601 UTC timestamp>` header line |
+
+Two runs with the same package selection produce a byte-identical document
+unless `--timestamp` is given — the header records package versions instead,
+which is what makes a diff in a deploy repository meaningful.
+`--split` and `--out` both name a destination; passing both is accepted, but
+`--split` takes effect and `--out` is ignored, because the code checks
+`--split` first.
+
+### `diff`
+
+Connects to a database read-only and renders the `ALTER` statements that
+bring it in line with the selected packages' definitions, via Alembic's
+`compare_metadata`.
+
+```text
+edutap-dbdef diff [--packages PACKAGES] [--exclude EXCLUDE]
+                   [--out OUT] [--ddl-role DDL_ROLE]
+                   [--allow-destructive]
+```
+
+| Flag | Argument | Default | Meaning |
+|---|---|---|---|
+| `--packages` | comma-separated names | all installed | compare only these packages |
+| `--exclude` | comma-separated names | none | skip these packages |
+| `--out` | path | none (stdout) | write the document to this file |
+| `--ddl-role` | role name | none | add `SET ROLE <role>;` to the document header |
+| `--allow-destructive` | flag | off | emit `DROP TABLE`/`DROP COLUMN`/`DROP CONSTRAINT`/`DROP INDEX` statements uncommented instead of commented out |
+
+Needs a database connection, configured as described under
+{ref}`connection-settings`.
+The role only needs read access.
+Like `create` and `check`, `diff` validates the package contract across the
+selected definitions before comparing — see the `ContractError` case under
+`check` and {ref}`exceptions`.
+Tables present in the database that belong to no selected package are
+reported on standard error and otherwise ignored — a shared database
+legitimately holds tables of packages this site did not select.
+Known limits, restated in the document itself: renames are not detected
+(they appear as a drop and an add), some type changes render incompletely,
+and data migrations are out of scope.
+
+### `check`
+
+Behaves like `diff` without writing a document: it reports whether the
+database deviates from the definitions and sets the process exit code
+accordingly.
+
+```text
+edutap-dbdef check [--packages PACKAGES] [--exclude EXCLUDE]
+```
+
+| Flag | Argument | Default | Meaning |
+|---|---|---|---|
+| `--packages` | comma-separated names | all installed | compare only these packages |
+| `--exclude` | comma-separated names | none | skip these packages |
+
+Needs a database connection, read-only.
+Prints `Schema is in sync with the definitions.` and exits `0` when there is
+nothing to do.
+Otherwise prints `Schema deviates from the definitions:` followed by one
+line per deviation on standard error, and exits `1`.
+Before comparing, `check` also validates the package contract across the
+selected definitions and exits `1` with a `ContractError` message — see
+{ref}`exceptions` — if any package uses a different naming
+convention, two packages claim the same `version_table`, or two packages
+define a table of the same name.
+
+### `apply`
+
+Applies a previously generated SQL document to a database.
+`apply` never generates SQL itself: it only executes a file that `create` or
+`diff` produced and a human has reviewed.
+
+```text
+edutap-dbdef apply [--dry-run] FILE
+```
+
+| Argument | Meaning |
+|---|---|
+| `FILE` | positional; path to the SQL file to apply |
+| `--dry-run` | do not execute anything; report how many characters of SQL would run |
+
+Needs a database connection with write access.
+The document supplies its own `BEGIN;`/`COMMIT;`, so `apply` runs the
+connection in `AUTOCOMMIT` and hands the whole document to the driver as one
+unit rather than nesting it in a second transaction.
+On success it prints `Executed <N> statements.`, counting schema statements
+only — `BEGIN`, `COMMIT`, `SET ROLE`, and comments are not counted.
+With `--dry-run` it still reads `FILE`, but does not open a database
+connection; it prints `Dry run, nothing executed.` and exits `0`.
+
+(connection-settings)=
+
+## Connection settings
+
+Only `diff`, `check`, and `apply` read connection settings; `create` never
+connects.
+Every setting has a prefixed name and, for most, a standard `PG*` alias; the
+prefixed name takes precedence when both are set.
+
+| Setting | `EDUTAP_DBDEF_*` variable | `PG*` alias | Default |
+|---|---|---|---|
+| DSN | `EDUTAP_DBDEF_DSN` | `DATABASE_URL` | none |
+| Host | `EDUTAP_DBDEF_HOST` | `PGHOST` | `postgres` |
+| Port | `EDUTAP_DBDEF_PORT` | `PGPORT` | `5432` |
+| Database | `EDUTAP_DBDEF_DATABASE` | `PGDATABASE` | `edutap` |
+| User | `EDUTAP_DBDEF_USER` | `PGUSER` | `edutap_ddl` |
+| Password | `EDUTAP_DBDEF_PASSWORD` | `PGPASSWORD` | empty |
+| SSL mode | `EDUTAP_DBDEF_SSLMODE` | `PGSSLMODE` | none |
+| SSL root certificate | `EDUTAP_DBDEF_SSLROOTCERT` | `PGSSLROOTCERT` | none |
+
+When a DSN is set (`EDUTAP_DBDEF_DSN` or `DATABASE_URL`), it is used as-is
+and every other setting above is ignored.
+Otherwise the individual settings are assembled into a
+`postgresql+psycopg://` URL.
+The driver is synchronous `psycopg`, not `asyncpg`: Alembic's
+`compare_metadata` and DDL rendering are synchronous APIs, and a CLI has no
+concurrency to gain.
+
+There is no `--dsn` command-line flag; set `EDUTAP_DBDEF_DSN` or
+`DATABASE_URL` in the environment instead.
+
+## `SchemaDefinition`
+
+`edutap.db_definitions.SchemaDefinition` is a frozen dataclass.
+A package constructs one and exposes it through the `edutap.db_definitions`
+entry-point group, either as the object itself or as a zero-argument
+callable that returns one.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | `str` | yes | the package's name, used in headers, `--packages`/`--exclude` selection, and error messages |
+| `metadata` | `sqlalchemy.MetaData` | yes | the package's own metadata; must not be `SQLModel.metadata` or another package's metadata |
+| `requires` | `tuple[str, ...]` | no, default `()` | names of packages this one's tables depend on, for topological ordering across package boundaries |
+| `alembic_ini` | `str \| None` | no, default `None` | path to the package's `alembic.ini`; carried and validated, unused until Alembic offline mode |
+| `version_table` | `str \| None` | no, default `None` | the package's own `alembic_version`-style table name; must be unique across the selected packages and must not also be a data table |
+
+`SchemaDefinition` also provides:
+
+`table_names`
+: property; the package's table names from `metadata.tables`, sorted.
+
+`validate()`
+: method; raises `DefinitionError` if `name` is empty, if `metadata` has no
+  tables, or if `version_table` names a table that also exists as a data
+  table in `metadata`.
+  Called automatically by discovery before a definition is used.
+
+`edutap.db_definitions.NAMING_CONVENTION` is the canonical constraint naming
+convention every package's `MetaData` must copy — see {doc}`how-to`.
+`check` compares each package's convention against this constant.
+
+(exceptions)=
+
+## Exceptions
+
+`edutap.db_definitions.DefinitionError`
+: a package's `SchemaDefinition` cannot be used, raised by
+  `SchemaDefinition.validate()`.
+  Not caught by the CLI: it surfaces as an uncaught exception if an
+  installed package announces an invalid definition.
+
+`edutap.db_definitions.discovery.DiscoveryError`
+: the installed definitions cannot be ordered, raised by `load_definitions()`
+  when `requires` describes a dependency cycle between packages.
+  Not caught by the CLI: it surfaces as an uncaught exception.
+
+`edutap.db_definitions.contract.ContractError`
+: the selected packages cannot share one database, raised by
+  `raise_on_violations()` after `check_contract()` found one or more
+  violations — a table name owned by more than one package, a
+  `version_table` claimed by more than one package, or a naming convention
+  that differs from `NAMING_CONVENTION`.
+  `create`, `diff`, and `check` load and validate the contract before doing
+  their own work; `apply` does not load package definitions at all, since it
+  only executes a file it is handed.
+  `main()` catches `ContractError` for every subcommand: it prints the
+  violation list to standard error and returns exit code `1`.
