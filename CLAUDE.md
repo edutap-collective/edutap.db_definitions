@@ -31,15 +31,29 @@ about the schema, not about the check.
 **Connect read-only for `diff` and `check`.** Only `apply` writes, and it is meant to
 run as a privileged role that no service holds.
 
-## Confidentiality
+## Sources and confidentiality
 
-No vendor internals from Apple or NXP — not in files, not in commit messages. What a
-platform's behaviour *means for us* is documentable ("the platform enforces a
-deadline, it is self-healing, it is outside our control"); the mechanics, concrete
-values and rule sets behind it are not.
+**No vendor internals — from any vendor, not just the ones currently in play.**
+Neither in files nor in commit messages.
 
-Contract and regulatory material is fine and wanted: eduPersonAssurance, GÉANT and
-eduGAIN terms.
+The standard is academic: a statement counts as reliable only where it can be
+evidenced from public information, with a link. Everything else was obtained either
+by our own testing or through insider knowledge, and the three are not
+interchangeable:
+
+* **Documented** — public source, linked. May be written as fact.
+* **Measured** — established by our own tests. May be written down, but always marked
+  as such, because it describes what a platform did on the day we looked, not what it
+  guarantees. It can change with the next release, without notice and without an
+  entry in any changelog.
+* **Insider knowledge** — is not written down at all.
+
+What a platform's behaviour *means for us* stays documentable even where the
+mechanism does not: "the platform enforces a deadline, it is self-healing, it is
+outside our control" carries the design consequence without disclosing anything.
+
+Contract and regulatory material is wanted and citable: eduPersonAssurance, GÉANT and
+eduGAIN terms, published wallet programme obligations.
 
 ## Working practice
 
