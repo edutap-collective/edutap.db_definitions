@@ -1,5 +1,6 @@
 import pytest
 from sqlalchemy import Boolean, Column, Enum, ForeignKey, Integer, MetaData, Table
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from edutap.db_definitions.contract import ContractError, check_contract, raise_on_violations
 from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
@@ -133,9 +134,11 @@ def test_a_boolean_column_is_not_mistaken_for_an_unqualified_type():
     """`Boolean` is a SchemaType too, and it creates no type on PostgreSQL.
 
     Measured, not assumed: `isinstance(Column("b", Boolean).type, SchemaType)`
-    is True and its `.schema` is None. A check written against `SchemaType`
-    alone therefore reports a violation for every boolean column in every
-    package — the most common column type there is.
+    is True, but `Boolean().schema` raises `AttributeError` — the attribute
+    does not exist at all, it does not default to `None`. A check that reads
+    it via `getattr(type_, "schema", None)` would therefore silently treat
+    every boolean column as one more unqualified type — the most common
+    column type there is.
     """
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
     Table(
@@ -148,6 +151,100 @@ def test_a_boolean_column_is_not_mistaken_for_an_unqualified_type():
     definition = SchemaDefinition(name="pkg.a", metadata=metadata)
 
     assert [v for v in check_contract([definition]) if v.kind == "unqualified_type"] == []
+
+
+def test_an_enum_hidden_inside_an_array_without_a_schema_is_a_violation():
+    """`ARRAY(ENUM(...))` renders the same unqualified `CREATE TYPE` a bare enum does.
+
+    Measured: `column.type` is the `ARRAY`, not the `Enum` — the enum sits one
+    level down, in `.item_type`. A check that inspects `column.type` alone
+    stays silent while `create_all` still emits `CREATE TYPE flagtype AS
+    ENUM (...)` outside the table's schema.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("flags", ARRAY(Enum("a", "b", name="flagtype")), nullable=False),
+        schema="pass_builder",
+    )
+    definition = SchemaDefinition(name="pkg.a", metadata=metadata)
+
+    violations = [v for v in check_contract([definition]) if v.kind == "unqualified_type"]
+
+    assert len(violations) == 1
+    assert "flagtype" in violations[0].message
+
+
+def test_an_enum_hidden_inside_an_array_that_inherits_its_table_schema_is_accepted():
+    """Measured: with `inherit_schema=True`, the array's enum renders `CREATE TYPE pb.flagtype`."""
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column(
+            "flags",
+            ARRAY(Enum("a", "b", name="flagtype", inherit_schema=True)),
+            nullable=False,
+        ),
+        schema="pass_builder",
+    )
+    definition = SchemaDefinition(name="pkg.a", metadata=metadata)
+
+    assert [v for v in check_contract([definition]) if v.kind == "unqualified_type"] == []
+
+
+def test_a_non_native_enum_creates_no_type_and_is_not_a_violation():
+    """`native_enum=False` renders as a plain `VARCHAR` column.
+
+    Measured: `create_all` emits no `CREATE TYPE` statement at all for such a
+    column, so flagging it would abort `create`/`diff`/`check` for a package
+    that has done nothing wrong.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("flavour", Enum("one", "two", name="flavour", native_enum=False), nullable=False),
+        schema="pass_builder",
+    )
+    definition = SchemaDefinition(name="pkg.a", metadata=metadata)
+
+    assert [v for v in check_contract([definition]) if v.kind == "unqualified_type"] == []
+
+
+def test_a_type_name_shared_by_two_columns_reports_every_site():
+    """Measured: two same-named enums still produce only one `CREATE TYPE` between them.
+
+    The second column silently takes on the first one's value list, so fixing
+    only the first reported site would leave the second one broken and
+    unmentioned.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "thing_one",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("flavour", Enum("one", "two", name="dup"), nullable=False),
+        schema="pass_builder",
+    )
+    Table(
+        "thing_two",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("flavour", Enum("one", "two", name="dup"), nullable=False),
+        schema="pass_builder",
+    )
+    definition = SchemaDefinition(name="pkg.a", metadata=metadata)
+
+    violations = [v for v in check_contract([definition]) if v.kind == "unqualified_type"]
+
+    assert len(violations) == 1
+    assert "thing_one.flavour" in violations[0].message
+    assert "thing_two.flavour" in violations[0].message
 
 
 def test_a_foreign_key_across_schemas_still_needs_a_declared_dependency():

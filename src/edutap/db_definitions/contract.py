@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 from sqlalchemy import Enum
 from sqlalchemy.dialects.postgresql import DOMAIN
+from sqlalchemy.types import TypeEngine
 
 from .definition import NAMING_CONVENTION, SchemaDefinition
 
@@ -114,6 +115,23 @@ def _undeclared_dependencies(definitions: Sequence[SchemaDefinition]) -> list[Co
     return violations
 
 
+def _underlying_type(type_: TypeEngine) -> TypeEngine:
+    """Follow ``ARRAY`` (and any other container) down to the type it wraps.
+
+    ``ARRAY(ENUM(...))`` renders the very same unqualified ``CREATE TYPE`` as
+    a bare ``ENUM(...)`` column does: measured, ``ARRAY(Enum(...)).item_type``
+    is the ``Enum`` instance, and it is that instance's ``.schema`` — not the
+    ``ARRAY``'s, which has none — that decides where the type is created. A
+    check that inspects ``column.type`` alone stays silent on every enum or
+    domain hidden inside an array.
+    """
+    item_type = getattr(type_, "item_type", None)
+    while item_type is not None:
+        type_ = item_type
+        item_type = getattr(type_, "item_type", None)
+    return type_
+
+
 def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
     """Report an enum or domain type that does not say which schema it lives in.
 
@@ -126,34 +144,52 @@ def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[Contract
     type into the contract schema, where the naming space is shared and a second
     package can collide with it.
 
-    Matched on ``Enum`` and ``DOMAIN`` rather than on ``SchemaType``, which is
-    the tempting but wrong test: ``Boolean`` is a ``SchemaType`` as well, its
-    ``schema`` is always ``None``, and PostgreSQL creates no type for it. A
-    check written against the base class reports a violation for every boolean
-    column in the codebase. ``Enum`` and ``DOMAIN`` are exactly the two that
-    render the ``CREATE TYPE``/``CREATE DOMAIN`` statements ``render._emit``
-    separates out.
+    Matched on ``Enum`` and ``DOMAIN`` rather than on the base ``SchemaType``,
+    which is the tempting but wrong test: ``Boolean`` is a ``SchemaType`` too,
+    but it carries no ``schema`` attribute at all — ``Boolean().schema`` raises
+    ``AttributeError`` rather than returning ``None``. A check that reads it
+    via ``getattr(type_, "schema", None)`` would silently treat every boolean
+    column as one more unqualified type, the most common column type there is.
+
+    A non-native ``Enum`` (``native_enum=False``) is excluded on purpose: it
+    renders as a plain ``VARCHAR`` column, PostgreSQL creates no type for it,
+    and flagging it aborts ``create``/``diff``/``check`` — via
+    :func:`raise_on_violations` — for a package that has done nothing wrong.
+    ``DOMAIN`` has no such switch; it always creates a type.
+
+    Every occurrence of a name is collected into one violation instead of
+    reporting only the first: measured, two columns that share a type name
+    still produce only one ``CREATE TYPE`` between them, so the second column
+    silently takes on the first one's value list — fixing only the first
+    reported site would leave that behind unnoticed.
     """
     violations = []
     for definition in definitions:
-        seen: set[str] = set()
+        sites: dict[str, list[str]] = defaultdict(list)
         for table in definition.metadata.tables.values():
             for column in table.columns:
-                type_ = column.type
-                if not isinstance(type_, (Enum, DOMAIN)) or type_.schema:
-                    continue
-                name = type_.name or column.name
-                if name in seen:
-                    continue
-                seen.add(name)
-                violations.append(
-                    ContractViolation(
-                        "unqualified_type",
-                        f"{definition.name}: type {name!r} on {table.key}.{column.name} "
-                        "declares no schema, so it would be created outside its table's "
-                        "schema. Pass inherit_schema=True (or schema=…) on the type.",
-                    )
+                type_ = _underlying_type(column.type)
+                is_unqualifiable_type = isinstance(type_, DOMAIN) or (
+                    isinstance(type_, Enum) and type_.native_enum
                 )
+                if not is_unqualifiable_type or type_.schema:
+                    continue
+                name = type_.name
+                if name is None:
+                    # Unreachable in practice: a native Enum without a name fails to
+                    # compile (`CompileError: PostgreSQL ENUM type requires a name`),
+                    # and DOMAIN takes its name as a required positional argument.
+                    continue
+                sites[name].append(f"{table.key}.{column.name}")
+        for name, locations in sorted(sites.items()):
+            violations.append(
+                ContractViolation(
+                    "unqualified_type",
+                    f"{definition.name}: type {name!r} on {', '.join(locations)} "
+                    "declares no schema, so it would be created outside its table's "
+                    "schema. Pass inherit_schema=True (or schema=…) on the type.",
+                )
+            )
     return violations
 
 
