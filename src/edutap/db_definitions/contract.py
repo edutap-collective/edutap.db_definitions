@@ -4,6 +4,9 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import NamedTuple
 
+from sqlalchemy import Enum
+from sqlalchemy.dialects.postgresql import DOMAIN
+
 from .definition import NAMING_CONVENTION, SchemaDefinition
 
 
@@ -36,10 +39,17 @@ def _table_collisions(definitions: Sequence[SchemaDefinition]) -> list[ContractV
 def _version_table_collisions(
     definitions: Sequence[SchemaDefinition],
 ) -> list[ContractViolation]:
+    """Report two packages claiming the same migration-history table.
+
+    Keyed on the qualified name: two packages may both call their history table
+    ``alembic_version`` as long as they keep it in their own schema, which is
+    the normal case once every package owns one.
+    """
     owners: dict[str, list[str]] = defaultdict(list)
     for definition in definitions:
-        if definition.version_table:
-            owners[definition.version_table].append(definition.name)
+        key = definition.version_table_key
+        if key:
+            owners[key].append(definition.name)
     return [
         ContractViolation(
             "version_table_collision",
@@ -104,6 +114,49 @@ def _undeclared_dependencies(definitions: Sequence[SchemaDefinition]) -> list[Co
     return violations
 
 
+def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
+    """Report an enum or domain type that does not say which schema it lives in.
+
+    SQLAlchemy scopes a type to the *metadata*, not to the table that uses it.
+    A type declared without a schema therefore renders as ``CREATE TYPE
+    flavour`` and lands in whatever ``search_path`` resolves to — typically
+    ``public`` — while the table using it sits in its owner's schema.
+
+    With rights granted per schema that is not cosmetic: it puts one service's
+    type into the contract schema, where the naming space is shared and a second
+    package can collide with it.
+
+    Matched on ``Enum`` and ``DOMAIN`` rather than on ``SchemaType``, which is
+    the tempting but wrong test: ``Boolean`` is a ``SchemaType`` as well, its
+    ``schema`` is always ``None``, and PostgreSQL creates no type for it. A
+    check written against the base class reports a violation for every boolean
+    column in the codebase. ``Enum`` and ``DOMAIN`` are exactly the two that
+    render the ``CREATE TYPE``/``CREATE DOMAIN`` statements ``render._emit``
+    separates out.
+    """
+    violations = []
+    for definition in definitions:
+        seen: set[str] = set()
+        for table in definition.metadata.tables.values():
+            for column in table.columns:
+                type_ = column.type
+                if not isinstance(type_, (Enum, DOMAIN)) or type_.schema:
+                    continue
+                name = type_.name or column.name
+                if name in seen:
+                    continue
+                seen.add(name)
+                violations.append(
+                    ContractViolation(
+                        "unqualified_type",
+                        f"{definition.name}: type {name!r} on {table.key}.{column.name} "
+                        "declares no schema, so it would be created outside its table's "
+                        "schema. Pass inherit_schema=True (or schema=…) on the type.",
+                    )
+                )
+    return violations
+
+
 def check_contract(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
     """Return every contract violation across the given definitions."""
     return [
@@ -111,6 +164,7 @@ def check_contract(definitions: Sequence[SchemaDefinition]) -> list[ContractViol
         *_version_table_collisions(definitions),
         *_convention_deviations(definitions),
         *_undeclared_dependencies(definitions),
+        *_unqualified_types(definitions),
     ]
 
 
