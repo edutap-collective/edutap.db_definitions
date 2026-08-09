@@ -265,3 +265,36 @@ def engine(postgres_url):
         connection.execute(text("CREATE SCHEMA public"))
     yield engine
     engine.dispose()
+
+
+@pytest.fixture
+def engine_with_schemas(postgres_url):
+    """An engine whose database has no schemas but `public`, empty.
+
+    The `engine` fixture resets `public` only. A test that creates an owner
+    schema would leak it into the next test, where `foreign_tables` then reports
+    tables nobody in that test created — a failure that looks like a bug in the
+    code under test and is not one.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(postgres_url)
+    with engine.begin() as connection:
+        # .all() materialises the list before the DROPs run on the same
+        # connection; iterating the lazy result while dropping its subject is
+        # how this fixture flakes.
+        schemas = (
+            connection.execute(
+                text(
+                    "SELECT nspname FROM pg_namespace "
+                    "WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for schema in schemas:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        connection.execute(text("CREATE SCHEMA public"))
+    yield engine
+    engine.dispose()
