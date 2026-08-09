@@ -3,11 +3,22 @@
 These are integration tests on purpose. The failure they guard against —
 Alembic reporting a difference that is not one — cannot be reproduced against a
 fake: it comes from what PostgreSQL's reflection returns, namely
-``referred_schema: None`` for a foreign key into the default schema.
+``referred_schema: None`` for a foreign key into a schema on the ``search_path``.
 """
 
 import pytest
-from sqlalchemy import ARRAY, Column, Enum, ForeignKey, Integer, MetaData, String, Table, text
+from sqlalchemy import (
+    ARRAY,
+    Column,
+    Enum,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    text,
+)
 
 from edutap.db_definitions import cli
 from edutap.db_definitions.compare import describe_changes, foreign_tables, render_diff
@@ -72,6 +83,116 @@ def test_a_schema_in_sync_reports_no_change(applied):
 
     with engine.connect() as connection:
         assert describe_changes(connection, [definition]) == []
+
+
+def search_path_definition() -> SchemaDefinition:
+    """A package whose foreign key and whose type both point into ``public``.
+
+    Both are things PostgreSQL's reflection reports unqualified once ``public``
+    is on the ``search_path``, and both are compared — the key by shape, the
+    type because the context sets ``compare_type=True``.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "pass_state",
+        metadata,
+        Column("pass_id", String(64), primary_key=True),
+        Column("kind", Enum("a", "b", name="kind", schema="public"), nullable=False),
+        schema="public",
+    )
+    Table(
+        "certificate",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("pass_id", String(64), ForeignKey("public.pass_state.pass_id")),
+        schema="pass_builder",
+    )
+    return SchemaDefinition(name="pkg.builder", metadata=metadata)
+
+
+def engine_with_search_path(engine, search_path: str):
+    """Return an engine whose connections *start* with the given ``search_path``.
+
+    Set at connect time on purpose. SQLAlchemy determines
+    ``dialect.default_schema_name`` once, when the dialect initialises on the
+    first connection, so a ``SET search_path`` issued afterwards does not move
+    it and the interesting case never arises. A deployment sets a role's path
+    with ``ALTER ROLE … SET search_path``, which also applies at connect time,
+    so this is the shape a real DDL role has.
+    """
+    return create_engine(dsn(engine), connect_args={"options": f"-csearch_path={search_path}"})
+
+
+def test_a_search_path_holding_more_than_the_default_schema_stays_clean(engine_with_schemas):
+    """A DDL role with its own service schema on the path must not turn `check` red.
+
+    Reflection omits the schema of everything *visible on the search_path*, not
+    just of the default schema, while Alembic keys only the default schema as
+    ``None``. With ``search_path = pass_builder, public`` the two rules disagree
+    about ``public``, and measured against PostgreSQL 18 the comparison then
+    reported ``remove_fk`` + ``add_fk`` + ``modify_type`` for ever, against a
+    database that was exactly what `create` had produced.
+
+    `compare._reflection_search_path` closes the gap by pinning the path to the
+    default schema while reflecting. Delete it and this test goes red.
+    """
+    definition = search_path_definition()
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+
+    scoped = engine_with_search_path(engine_with_schemas, "pass_builder,public")
+    try:
+        with scoped.connect() as connection:
+            assert connection.dialect.default_schema_name == "pass_builder"
+            assert describe_changes(connection, [definition]) == []
+            sql = render_diff(connection, [definition])
+    finally:
+        scoped.dispose()
+
+    assert "ALTER TABLE" not in sql
+    assert "CONSTRAINT" not in sql
+
+
+def test_a_real_deviation_is_still_found_under_such_a_search_path(engine_with_schemas):
+    """The pin must silence the false positives without silencing the true ones.
+
+    Pinning `search_path` to a single schema is the kind of fix that can pass
+    the test above by making the comparison see nothing at all.
+    """
+    definition = search_path_definition()
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+    with engine_with_schemas.begin() as connection:
+        connection.execute(text("ALTER TABLE pass_builder.certificate ADD COLUMN extra integer"))
+
+    scoped = engine_with_search_path(engine_with_schemas, "pass_builder,public")
+    try:
+        with scoped.connect() as connection:
+            changes = describe_changes(connection, [definition])
+    finally:
+        scoped.dispose()
+
+    assert any("remove_column" in change and "extra" in change for change in changes)
+
+
+def test_the_connections_search_path_survives_a_comparison(engine_with_schemas):
+    """The connection belongs to the caller; the pin must not leak out of the call.
+
+    A caller that goes on to run its own statements on the same connection would
+    otherwise find them resolving against a `search_path` this tool set behind
+    its back.
+    """
+    definition = search_path_definition()
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+
+    scoped = engine_with_search_path(engine_with_schemas, "pass_builder,public")
+    try:
+        with scoped.connect() as connection:
+            before = connection.exec_driver_sql("SHOW search_path").scalar()
+            describe_changes(connection, [definition])
+            assert connection.exec_driver_sql("SHOW search_path").scalar() == before
+            render_diff(connection, [definition])
+            assert connection.exec_driver_sql("SHOW search_path").scalar() == before
+    finally:
+        scoped.dispose()
 
 
 def test_a_real_deviation_is_still_reported(applied):

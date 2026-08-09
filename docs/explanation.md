@@ -97,21 +97,22 @@ Alembic's blind spots along with its correctness.
 
 ## Why the comparison folds the default schema away
 
-PostgreSQL's own reflection omits the schema of anything that lives in the
-connection's default schema: a foreign key into `public.pass_state` comes
-back from the database as `referred_schema: None`, not `'public'`.
+Alembic represents the connection's default schema as `None`.
+It reflects that schema under that key, and it keys the tables it found by it.
 A package's declaration, by the rule above, always says `'public'`
 explicitly.
-Compared literally against what reflection reports, the two would differ on
-every single run, and `check`/`diff` would report a `remove_fk` followed by
-an `add_fk` for a foreign key that never actually changed — a comparison that
-can never go green is worse than no comparison at all.
+Compared literally, the two would differ on every single run, and every table
+in the default schema would be reported as an `add_table` for a table that is
+plainly already there — a comparison that can never go green is worse than no
+comparison at all.
 
 The comparison therefore runs against a throwaway copy of the declared
 metadata, built once per comparison, with the connection's default schema
-folded away to match the shape reflection produces: the table itself, a
-foreign key's target, and a column's type all fold the same way, because all
-three carry a schema reflection can drop.
+folded away to match the shape Alembic produces: the table itself, a
+foreign key's target, and a column's type all fold the same way.
+That is not a stylistic choice — folding the table while leaving its foreign
+key qualified makes the key unresolvable inside the copy, and SQLAlchemy
+raises `NoReferencedTableError` before the comparison starts.
 Folding is not the same as dropping the declaration.
 The package keeps declaring its schema explicitly — that is what makes the
 tool's claim and the database agree in the first place — and every other
@@ -135,6 +136,38 @@ forgot to qualify.
 It is worth knowing before it is mistaken for one: nothing about that line
 was left unfinished, it is exactly the copy built to compare cleanly,
 reported by a library that never saw the declared name at all.
+
+### Why the comparison pins `search_path`
+
+Alembic's rule — only the default schema is `None` — is narrower than
+PostgreSQL's.
+Reflection omits the schema of everything *visible on the `search_path`*, so
+a foreign key into `public.pass_state` comes back as `referred_schema: None`
+whenever `public` is on the path, whatever the default schema happens to be.
+The two rules coincide only when the path holds nothing but the default
+schema.
+
+A DDL role set up the way a schema-per-service split invites — `ALTER ROLE
+edutap_ddl SET search_path = pass_builder, public` — breaks that coincidence.
+The default schema is then `pass_builder`, so the fold clears `pass_builder`
+and leaves the declared `'public'` standing, while reflection reports the key
+into `public` unqualified.
+Measured against PostgreSQL 18, `check` then reports `remove_fk`, `add_fk`
+and `modify_type` on every run, and `diff` proposes dropping and re-adding a
+healthy foreign key — against a database that is exactly what `create`
+produced.
+
+For the duration of a reflection, `check` and `diff` therefore pin the
+connection's `search_path` to its own default schema and restore it
+afterwards.
+That makes PostgreSQL's omission rule and Alembic's `None` rule the same rule.
+It changes nothing about *which* objects are inspected — every lookup this
+tool makes names its schema explicitly — only whether the names come back
+qualified.
+
+You do not need to configure anything for this, and in particular you should
+not "fix" it by narrowing the DDL role's `search_path` yourself: the tool
+handles the path it is given.
 
 ## The known limits of autogenerate
 

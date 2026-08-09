@@ -2,6 +2,7 @@
 
 import io
 from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 
 from alembic.autogenerate import compare_metadata, produce_migrations
 from alembic.migration import MigrationContext
@@ -12,8 +13,9 @@ from alembic.operations.ops import (
     CreateTableOp,
     MigrateOperation,
 )
-from sqlalchemy import BLANK_SCHEMA, Column, MetaData, Table, inspect
+from sqlalchemy import BLANK_SCHEMA, Column, MetaData, Table, inspect, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.sql.schema import RETAIN_SCHEMA
 from sqlalchemy.types import SchemaType, TypeEngine
 
@@ -65,30 +67,34 @@ def comparison_metadata(
 ) -> MetaData:
     """Return the merged metadata with the connection's default schema folded away.
 
-    PostgreSQL's reflection omits the schema of anything in the default schema:
-    a foreign key into ``public.pass_state`` comes back as
-    ``referred_schema: None``. The declared metadata says ``'public'``, Alembic
-    compares the two tuples, finds them different, and emits ``remove_fk``
-    followed by ``add_fk`` on every single run — a `check` that can never go
-    green and a `diff` that proposes dropping and re-adding a healthy key.
+    Alembic represents the connection's default schema as ``None``: it reflects
+    it under that key, hands ``include_name`` ``None`` for it, and keys its
+    ``conn_table_names`` by it. The declared metadata says ``'public'``, so
+    without folding, every table in the default schema is compared against
+    nothing and reported as ``add_table`` — measured, with the fold removed and
+    reflection fully qualified.
 
     Folding is not the same as dropping the declaration. Packages keep declaring
     their schema explicitly, which is what makes the tool's claim and the
     database agree; this copy exists solely so the comparison sees the shape
-    reflection produces. Rendering, the contract checks and ``foreign_tables``
-    all keep using the declared names.
+    Alembic produces. Rendering, the contract checks and ``foreign_tables`` all
+    keep using the declared names.
 
     Three things carry a schema and all three have to be folded: the table, the
-    foreign key's target, and the column's *type*. Reflection omits the default
-    schema for a native enum or domain in exactly the same way, so with
-    ``compare_type=True`` a type declared ``schema="public"`` — the form
-    ``contract._unqualified_types`` recommends — would otherwise be reported as
-    ``modify_type`` on every run.
+    foreign key's target, and the column's *type*. They cannot be folded
+    separately: measured, folding the table while leaving its foreign key
+    qualified makes the key unresolvable inside the folded ``MetaData`` and
+    ``sorted_tables`` raises ``NoReferencedTableError``. Types follow for the
+    same reason of consistency — with ``compare_type=True`` a type declared
+    ``schema="public"`` (the form ``contract._unqualified_types`` recommends)
+    would otherwise be reported as ``modify_type`` on every run.
 
     The default schema is read from the connection rather than assumed to be
-    ``public``: with ``search_path = "$user", public`` and a matching schema it
-    is the role's name instead, and folding the wrong one would reintroduce the
-    very churn this prevents.
+    ``public``: with ``search_path = pass_builder, public`` it is
+    ``pass_builder`` instead, and folding the wrong one would reintroduce the
+    very churn this prevents. What makes the reflected side agree with the fold
+    is :func:`_reflection_search_path`, which is where the reasoning about
+    PostgreSQL's own omission rule now lives — read the two together.
     """
     default_schema = connection.dialect.default_schema_name
     merged = merged_metadata(definitions)
@@ -146,6 +152,61 @@ def _folded_type(type_: TypeEngine, default_schema: str | None) -> TypeEngine:
     return type_.adapt(type(type_), item_type=item_type)
 
 
+@contextmanager
+def _reflection_search_path(connection: Connection) -> Iterator[None]:
+    """Pin ``search_path`` to the default schema for the duration of a reflection.
+
+    PostgreSQL's reflection omits the schema of everything **visible on the
+    ``search_path``**, not of everything in the default schema — measured, a
+    foreign key into ``public.pass_state`` comes back as
+    ``referred_schema: None`` whenever ``public`` is on the path, whatever
+    ``current_schema()`` happens to be. Alembic's rule is the narrower one: only
+    the default schema is ``None`` (see :func:`comparison_metadata`). The two
+    coincide exactly when the path holds nothing but the default schema, and
+    disagree the moment it holds anything else.
+
+    That disagreement is not hypothetical. A DDL role whose ``search_path`` is
+    ``pass_builder, public`` reflects a key into ``public`` as unqualified while
+    the fold — keyed on ``pass_builder`` — leaves the declared ``'public'``
+    standing. Measured against PostgreSQL 18, ``check`` then reports
+    ``remove_fk`` plus ``add_fk`` plus ``modify_type`` on a database that is
+    exactly what ``create`` produced, on every run and for ever.
+
+    Pinning the path is what makes the two rules agree, and it is a smaller
+    intervention than it looks: it changes nothing about *which* objects are
+    reflected — every inspector call in this module names its schema — only
+    whether the names come back qualified.
+
+    ``pg_catalog`` would qualify *everything* instead, which reads like the
+    tidier answer and is not: Alembic would still key the default schema as
+    ``None``, so the fold would have to stay, and it cannot be applied to only
+    part of the metadata (again, see :func:`comparison_metadata`).
+
+    The setting is restored on the way out. ``SET`` is transactional in
+    PostgreSQL, so an aborted transaction rolls it back on its own — which is
+    why a restore that fails because the block left the transaction in
+    ``InFailedSqlTransaction`` is suppressed rather than allowed to mask the
+    error that put it there.
+    """
+    previous = connection.exec_driver_sql("SHOW search_path").scalar()
+    _set_search_path(connection, connection.dialect.default_schema_name or "")
+    try:
+        yield
+    finally:
+        with suppress(DBAPIError):
+            _set_search_path(connection, previous or "")
+
+
+def _set_search_path(connection: Connection, value: str) -> None:
+    """Set ``search_path`` through ``set_config`` so the value stays a bound parameter.
+
+    ``SET search_path TO …`` takes an identifier list, which would have to be
+    quoted by hand and is fed here with a value read back out of the database.
+    ``set_config`` takes it as a string, so the driver binds it.
+    """
+    connection.execute(text("SELECT set_config('search_path', :value, false)"), {"value": value})
+
+
 def _context(connection: Connection, definitions: Sequence[SchemaDefinition]) -> MigrationContext:
     default_schema = connection.dialect.default_schema_name
     known = _known_names(definitions)
@@ -195,9 +256,10 @@ def describe_changes(connection: Connection, definitions: Sequence[SchemaDefinit
         "but does not exist in the database"
         for schema in missing_schemas(connection, definitions)
     ]
-    diffs = compare_metadata(
-        _context(connection, definitions), comparison_metadata(connection, definitions)
-    )
+    with _reflection_search_path(connection):
+        diffs = compare_metadata(
+            _context(connection, definitions), comparison_metadata(connection, definitions)
+        )
     return [*absent, *(repr(diff) for diff in diffs)]
 
 
@@ -342,9 +404,10 @@ def render_diff(
     allow_destructive: bool = False,
 ) -> str:
     """Render the ALTER statements that bring the database in line."""
-    migrations = produce_migrations(
-        _context(connection, definitions), comparison_metadata(connection, definitions)
-    )
+    with _reflection_search_path(connection):
+        migrations = produce_migrations(
+            _context(connection, definitions), comparison_metadata(connection, definitions)
+        )
     buffer = io.StringIO()
     offline = MigrationContext.configure(
         dialect_name="postgresql", opts={"as_sql": True, "output_buffer": buffer}
