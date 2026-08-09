@@ -194,6 +194,30 @@ A file generated without the flag says so in its header — if you find a
 for this deployment, regenerate it with the flag.
 ```
 
+```{note}
+`--ddl-role` is the whole of this tool's part in the privilege model.
+It decides *who owns* the objects it creates; it does not grant anything, and
+it never will.
+
+Creating roles, granting per-schema `USAGE` and `SELECT` to the services that
+read the data, and maintaining the `ALTER DEFAULT PRIVILEGES` rules that make
+those grants apply to future tables are the deployment's work, in Ansible —
+deliberately not this tool's.
+Two reasons: a generated `schema.sql` is committed to a deploy repository and
+reviewed by hand, which is the wrong place to keep a privilege model that has
+to stay correct between releases; and grants are per site, while the rendered
+DDL is the same everywhere a package is installed.
+
+Alembic's own `env.py` is outside the boundary for the same reason.
+A package declares `alembic_ini` and `version_table` so that this tool knows
+which history table belongs to whom, and that is where the relationship ends —
+running migrations stays with the package's own Alembic setup.
+
+So a fresh schema-per-service split needs three things, not one: this tool for
+the DDL, the deployment's role and grant management for who may use it, and
+each package's Alembic for what happens next.
+```
+
 Review `schema.sql`, then commit it into the deploy repository.
 Apply it with the existing `swarmed_postgres:run_sql` task, the same way any
 other administrative SQL file is applied in that deployment.
