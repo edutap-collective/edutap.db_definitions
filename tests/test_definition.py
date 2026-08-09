@@ -16,8 +16,8 @@ def make_metadata(*table_names: str, schema: str | None = None) -> MetaData:
 
 
 def test_table_names_are_sorted():
-    definition = SchemaDefinition(name="pkg", metadata=make_metadata("b", "a"))
-    assert definition.table_names == ("a", "b")
+    definition = SchemaDefinition(name="pkg", metadata=make_metadata("b", "a", schema="public"))
+    assert definition.table_names == ("public.a", "public.b")
 
 
 def test_validate_accepts_a_minimal_definition():
@@ -57,8 +57,12 @@ def test_a_table_without_a_schema_is_rejected():
     with pytest.raises(DefinitionError) as error:
         definition.validate()
 
-    assert "thing" in str(error.value)
-    assert "schema" in str(error.value)
+    message = str(error.value)
+    assert "thing" in message
+    assert "schema" in message
+    assert "__table_args__" in message
+    assert 'schema="<name>"' in message
+    assert "search_path" in message
 
 
 def test_the_schemas_of_a_definition_are_reported_sorted():

@@ -117,7 +117,7 @@ def test_a_native_enum_type_is_created_before_the_table_that_uses_it():
     sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
     assert "CREATE TYPE provider AS ENUM ('apple', 'google');" in sql
     assert sql.index("CREATE TYPE provider") < sql.index(
-        "CREATE TABLE IF NOT EXISTS provider_thing"
+        "CREATE TABLE IF NOT EXISTS public.provider_thing"
     )
 
 
@@ -172,9 +172,9 @@ def test_a_foreign_key_across_a_package_boundary_renders():
     """
     provider, consumer = make_cross_package_definitions()
     sql = render_create([provider, consumer])
-    assert "REFERENCES view_source (id)" in sql
-    assert sql.index("CREATE TABLE IF NOT EXISTS view_source") < sql.index(
-        "CREATE TABLE IF NOT EXISTS view_state"
+    assert "REFERENCES public.view_source (id)" in sql
+    assert sql.index("CREATE TABLE IF NOT EXISTS public.view_source") < sql.index(
+        "CREATE TABLE IF NOT EXISTS public.view_state"
     )
 
 
@@ -192,9 +192,9 @@ def test_cross_package_rendering_keeps_the_section_comments():
 def test_split_renders_a_cross_package_foreign_key_per_package():
     provider, consumer = make_cross_package_definitions()
     documents = render_create_split([provider, consumer])
-    assert "CREATE TABLE IF NOT EXISTS view_source" in documents["pkg.provider"]
-    assert "REFERENCES view_source (id)" in documents["pkg.consumer"]
-    assert "CREATE TABLE IF NOT EXISTS view_source" not in documents["pkg.consumer"]
+    assert "CREATE TABLE IF NOT EXISTS public.view_source" in documents["pkg.provider"]
+    assert "REFERENCES public.view_source (id)" in documents["pkg.consumer"]
+    assert "CREATE TABLE IF NOT EXISTS public.view_source" not in documents["pkg.consumer"]
 
 
 def test_an_empty_selection_is_refused():

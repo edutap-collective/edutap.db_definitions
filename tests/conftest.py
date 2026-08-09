@@ -81,7 +81,7 @@ def make_definition_with_foreign_key(name: str, schema: str = "public") -> Schem
     return SchemaDefinition(name=name, metadata=metadata)
 
 
-def make_definition_with_enum_and_sequence(name: str) -> SchemaDefinition:
+def make_definition_with_enum_and_sequence(name: str, schema: str = "public") -> SchemaDefinition:
     """Build a definition using schema objects that are not tables or indexes.
 
     A native PostgreSQL enum type and an explicit sequence both need their own
@@ -101,14 +101,17 @@ def make_definition_with_enum_and_sequence(name: str) -> SchemaDefinition:
             primary_key=True,
         ),
         Column("provider", Enum("apple", "google", name="provider"), nullable=False),
+        schema=schema,
     )
     return SchemaDefinition(name=name, metadata=metadata)
 
 
-def make_definition_with_deferred_foreign_key(name: str) -> SchemaDefinition:
+def make_definition_with_deferred_foreign_key(
+    name: str, schema: str = "public"
+) -> SchemaDefinition:
     """Build a definition whose foreign key is added by a separate ALTER TABLE."""
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    Table("first", metadata, Column("id", Integer, primary_key=True))
+    Table("first", metadata, Column("id", Integer, primary_key=True), schema=schema)
     Table(
         "second",
         metadata,
@@ -116,14 +119,16 @@ def make_definition_with_deferred_foreign_key(name: str) -> SchemaDefinition:
         Column(
             "first_id",
             Integer,
-            ForeignKey("first.id", use_alter=True, name="fk_second_first_id_first"),
+            ForeignKey(f"{schema}.first.id", use_alter=True, name="fk_second_first_id_first"),
         ),
+        schema=schema,
     )
     return SchemaDefinition(name=name, metadata=metadata)
 
 
 def make_cross_package_definitions(
     declare_requires: bool = True,
+    schema: str = "public",
 ) -> tuple[SchemaDefinition, SchemaDefinition]:
     """Two packages where the second one's table references the first one's.
 
@@ -133,14 +138,15 @@ def make_cross_package_definitions(
     something puts both tables into one MetaData.
     """
     provider_metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    Table("view_source", provider_metadata, Column("id", Integer, primary_key=True))
+    Table("view_source", provider_metadata, Column("id", Integer, primary_key=True), schema=schema)
 
     consumer_metadata = MetaData(naming_convention=NAMING_CONVENTION)
     Table(
         "view_state",
         consumer_metadata,
         Column("id", Integer, primary_key=True),
-        Column("source_id", Integer, ForeignKey("view_source.id"), nullable=False),
+        Column("source_id", Integer, ForeignKey(f"{schema}.view_source.id"), nullable=False),
+        schema=schema,
     )
 
     provider = SchemaDefinition(name="pkg.provider", metadata=provider_metadata)
