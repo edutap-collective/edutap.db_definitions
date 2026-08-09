@@ -34,6 +34,7 @@ __all__ = [
     "describe_changes",
     "foreign_tables",
     "merged_metadata",
+    "missing_schemas",
     "render_diff",
 ]
 
@@ -162,12 +163,37 @@ def _context(connection: Connection, definitions: Sequence[SchemaDefinition]) ->
     )
 
 
+def missing_schemas(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
+    """Return the schemas the selection needs that the database does not have.
+
+    Includes the schemas of qualified types, which need creating just as a table
+    schema does, and a ``version_table_schema`` holding no data table at all.
+    """
+    present = set(inspect(connection).get_schema_names())
+    return sorted((needed_schemas(definitions) | type_schemas(definitions)) - present)
+
+
 def describe_changes(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
-    """Return one readable line per deviation; empty when the schema is in sync."""
+    """Return one readable line per deviation; empty when the schema is in sync.
+
+    Missing schemas come first, and not only because a missing schema explains
+    the missing tables under it. A schema that holds nothing but a package's
+    migration history has no table in the metadata, so the table comparison
+    cannot mention it: ``check`` reported "in sync" while ``diff`` carried a lone
+    ``CREATE SCHEMA``, and a deployment gating ``diff`` on ``check`` never
+    created it. Alembic's first ``CREATE TABLE alembic_version_…`` then failed at
+    the *next* migration, which is the failure ``render.needed_schemas`` exists
+    to prevent.
+    """
+    absent = [
+        f"missing_schema: {schema!r} is needed by the selected packages "
+        "but does not exist in the database"
+        for schema in missing_schemas(connection, definitions)
+    ]
     diffs = compare_metadata(
         _context(connection, definitions), comparison_metadata(connection, definitions)
     )
-    return [repr(diff) for diff in diffs]
+    return [*absent, *(repr(diff) for diff in diffs)]
 
 
 def foreign_tables(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
@@ -357,25 +383,24 @@ def render_diff(
             body.append(commented)
         else:
             body.append(statement)
-    return document(header, [*_missing_schemas(connection, definitions), *body], ddl_role)
+    return document(header, [*_create_schemas(connection, definitions), *body], ddl_role)
 
 
-def _missing_schemas(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
+def _create_schemas(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
     """Return the ``CREATE SCHEMA`` statements this diff owes its own body.
 
     A diff is applied, so it is responsible for the schemas its statements need,
     exactly as ``render_create`` is: without this the first table of a
-    not-yet-existing schema fails with ``InvalidSchemaName``. Reuses
-    ``render``'s notion of which schemas a selection needs so the two documents
-    cannot come to different conclusions.
+    not-yet-existing schema fails with ``InvalidSchemaName``.
 
     Restricted to the schemas the database does not have yet, which
     ``render_create`` cannot do because it never sees a connection. A diff is
-    generated against the very database it is applied to, and ``CREATE SCHEMA``
-    needs CREATE on the *database* even in its ``IF NOT EXISTS`` form -- a right
-    the DDL role has no reason to hold for a schema that already exists (the
-    same reasoning that keeps ``public`` out of ``render._ALWAYS_PRESENT``).
+    generated against the very database it is applied to, and measured,
+    ``CREATE SCHEMA`` needs CREATE on the *database* even in its
+    ``IF NOT EXISTS`` form: PostgreSQL checks the privilege before the existence
+    test, so a role without that right gets ``InsufficientPrivilege`` even for a
+    schema that is already there. Emitting these unconditionally would break the
+    diff for the very role it is meant to be applied by — the same reasoning
+    that keeps ``public`` out of ``render._ALWAYS_PRESENT``.
     """
-    present = set(inspect(connection).get_schema_names())
-    needed = needed_schemas(definitions) | type_schemas(definitions)
-    return schema_statements(needed - present)
+    return schema_statements(set(missing_schemas(connection, definitions)))

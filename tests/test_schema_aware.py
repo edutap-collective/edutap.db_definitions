@@ -9,6 +9,7 @@ fake: it comes from what PostgreSQL's reflection returns, namely
 import pytest
 from sqlalchemy import ARRAY, Column, Enum, ForeignKey, Integer, MetaData, String, Table, text
 
+from edutap.db_definitions import cli
 from edutap.db_definitions.compare import describe_changes, foreign_tables, render_diff
 from edutap.db_definitions.definition import (
     NAMING_CONVENTION,
@@ -71,35 +72,6 @@ def test_a_schema_in_sync_reports_no_change(applied):
 
     with engine.connect() as connection:
         assert describe_changes(connection, [definition]) == []
-
-
-def test_rendering_a_diff_does_not_mutate_the_declared_metadata(applied):
-    """`_requalified` reaches into the caller's tables to restore qualification.
-
-    It hands Alembic columns that belong to the package's own MetaData, and
-    Alembic copies an attached column before putting it into the throwaway Table
-    it renders from. That is its choice, not ours: were it to stop, or were the
-    fold to mutate a type object the copy shares with the original, the caller's
-    MetaData would be silently rewired to a table this tool built.
-    """
-    engine, definition = applied
-    with engine.connect() as connection:
-        connection.execute(text("DROP TABLE pass_builder.certificate"))
-        connection.commit()
-
-    def shape():
-        return {
-            table.key: [(column.name, column.table.key) for column in table.columns]
-            for table in definition.metadata.tables.values()
-        }
-
-    before_sql, before_shape = render_create([definition]), shape()
-
-    with engine.connect() as connection:
-        render_diff(connection, [definition])
-
-    assert render_create([definition]) == before_sql
-    assert shape() == before_shape
 
 
 def test_a_real_deviation_is_still_reported(applied):
@@ -187,6 +159,12 @@ def test_an_array_of_a_type_declared_in_the_default_schema_does_not_churn(engine
     `ARRAY`'s `item_type` straight through: clearing the schema in place would
     edit the type object the *package* declared, and the package's own
     `render_create` would then create `kind` outside `public` for ever after.
+
+    This is therefore also **the** guard against the comparison mutating the
+    caller's metadata, and the only place it can be guarded from: the type is
+    the one thing `merged_metadata` and `comparison_metadata` share with the
+    package's own MetaData: tables and columns are copied, so a test that
+    compares those cannot fail. Do not replace this with a broader-looking one.
     """
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
     Table(
@@ -234,6 +212,36 @@ def test_a_type_change_in_the_default_schema_renders_qualified(engine_with_schem
     assert "ALTER TABLE public.thing ALTER COLUMN kind TYPE public.kind" in sql
 
 
+def test_a_column_whose_key_differs_from_its_name_keeps_its_qualified_type(engine_with_schemas):
+    """A package may set `key` freely, and `ColumnCollection` is keyed by it.
+
+    Looking the declared column up with `table.c[name]` therefore misses
+    silently and leaves the folded column in place, which renders
+    `ADD COLUMN kind kind` — a type name resolved through the applying role's
+    search_path.
+    """
+    before = MetaData(naming_convention=NAMING_CONVENTION)
+    Table("thing", before, Column("id", Integer, primary_key=True), schema="public")
+    apply_sql(
+        render_create([SchemaDefinition(name="pkg.a", metadata=before)]), dsn(engine_with_schemas)
+    )
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("kind", Enum("a", "b", name="kind", schema="public"), key="kind_"),
+        schema="public",
+    )
+    definition = SchemaDefinition(name="pkg.a", metadata=metadata)
+
+    with engine_with_schemas.connect() as connection:
+        sql = render_diff(connection, [definition])
+
+    assert "ADD COLUMN kind public.kind" in sql
+
+
 def test_a_diff_that_needs_a_new_schema_creates_it(engine_with_schemas):
     """A diff is applied, so it owes the schemas its own statements need.
 
@@ -254,6 +262,54 @@ def test_a_diff_that_needs_a_new_schema_creates_it(engine_with_schemas):
     apply_sql(sql, dsn(engine_with_schemas))
     with engine_with_schemas.connect() as connection:
         assert describe_changes(connection, [definition]) == []
+
+
+def history_only_schema_definition() -> SchemaDefinition:
+    """A package keeping its migration history in a schema it holds no table in."""
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table("thing", metadata, Column("id", Integer, primary_key=True), schema="pass_builder")
+    return SchemaDefinition(
+        name="pkg.a",
+        metadata=metadata,
+        version_table="alembic_version_pkg_a",
+        version_table_schema="history",
+    )
+
+
+def test_check_reports_an_owned_schema_the_database_lacks(
+    installed, engine_with_schemas, monkeypatch, capsys
+):
+    """A missing schema is a deviation, and only `check` can catch this one.
+
+    A missing *data* schema surfaces as `add_table` for the tables inside it. A
+    schema that only holds the migration history has no table in the metadata at
+    all, so nothing in the comparison mentions it: `check` said "in sync" while
+    the diff carried a lone `CREATE SCHEMA`. A deployment gating `diff` on
+    `check` therefore never created it, and Alembic's first
+    `CREATE TABLE alembic_version_…` failed at the *next* migration — the very
+    failure `render.needed_schemas` exists to prevent.
+    """
+    definition = history_only_schema_definition()
+    installed([definition])
+    with engine_with_schemas.begin() as connection:
+        connection.execute(text("CREATE SCHEMA pass_builder"))
+        connection.execute(text("CREATE TABLE pass_builder.thing (id SERIAL NOT NULL PRIMARY KEY)"))
+    monkeypatch.setenv("EDUTAP_DBDEF_DSN", dsn(engine_with_schemas))
+
+    assert cli.main(["check"]) == 1
+    assert "history" in capsys.readouterr().err
+
+
+def test_check_passes_once_the_history_schema_exists(
+    installed, engine_with_schemas, monkeypatch, capsys
+):
+    definition = history_only_schema_definition()
+    installed([definition])
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+    monkeypatch.setenv("EDUTAP_DBDEF_DSN", dsn(engine_with_schemas))
+
+    assert cli.main(["check"]) == 0
+    assert "in sync" in capsys.readouterr().out
 
 
 def test_a_foreign_table_in_an_owned_schema_is_reported_qualified(applied):
@@ -324,7 +380,7 @@ def test_a_freely_named_version_table_in_an_owned_schema_is_not_reported_as_fore
 def test_a_schema_that_only_holds_the_history_table_is_still_ours(engine_with_schemas):
     """`version_table_schema` may name a schema the package holds no data table in.
 
-    `render._needed_schemas` already counts it among a package's schemas, and
+    `render.needed_schemas` already counts it among a package's schemas, and
     `render_create` creates it. `foreign_tables` and the comparison have to agree
     with that, or the two modules mean different things by "the package's
     schemas".
