@@ -2,9 +2,16 @@ import dataclasses
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, Sequence, Table
+from sqlalchemy import ARRAY, Boolean, Column, Enum, Integer, MetaData, Sequence, Table
+from sqlalchemy.dialects.postgresql import DOMAIN
 
-from edutap.db_definitions.definition import NAMING_CONVENTION, DefinitionError, SchemaDefinition
+from edutap.db_definitions.definition import (
+    NAMING_CONVENTION,
+    DefinitionError,
+    SchemaDefinition,
+    creates_a_schema_bound_type,
+    underlying_type,
+)
 from tests.conftest import make_definition
 
 
@@ -180,3 +187,35 @@ def test_the_version_table_may_not_also_be_a_data_table():
         definition.validate()
 
     assert "history" in str(error.value)
+
+
+def test_only_types_that_create_a_database_object_are_schema_bound():
+    """The one predicate three modules ask, with the three near misses.
+
+    Written out because each near miss failed differently in this codebase:
+    matching the base class `SchemaType` crashed `check` on every boolean
+    column, treating a non-native enum as schema-bound aborted `create` for a
+    correct package, and looking only at `column.type` walked past an enum
+    inside an array.
+    """
+    assert creates_a_schema_bound_type(Enum("a", "b", name="kind"))
+    assert creates_a_schema_bound_type(DOMAIN("positive", Integer))
+
+    # A SchemaType with no `schema` attribute at all — reading one raises.
+    assert not creates_a_schema_bound_type(Boolean())
+    with pytest.raises(AttributeError):
+        Boolean().schema  # noqa: B018
+
+    # Renders as VARCHAR; PostgreSQL creates nothing for it.
+    assert not creates_a_schema_bound_type(Enum("a", "b", name="kind", native_enum=False))
+
+    # Not a type-creating type at all.
+    assert not creates_a_schema_bound_type(Integer())
+
+
+def test_the_predicate_reaches_a_type_hidden_in_a_container():
+    """`underlying_type` first, then the predicate — the order the callers use."""
+    array_of_enum = ARRAY(Enum("a", "b", name="kind"))
+
+    assert not creates_a_schema_bound_type(array_of_enum)
+    assert creates_a_schema_bound_type(underlying_type(array_of_enum))

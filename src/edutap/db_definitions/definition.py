@@ -1,8 +1,10 @@
 """The contract a package uses to announce its tables, and its shared type-introspection helper."""
 
 from dataclasses import dataclass, field
+from typing import TypeGuard
 
-from sqlalchemy import MetaData
+from sqlalchemy import Enum, MetaData
+from sqlalchemy.dialects.postgresql import DOMAIN
 from sqlalchemy.schema import Sequence
 from sqlalchemy.types import TypeEngine
 
@@ -183,3 +185,30 @@ def underlying_type(type_: TypeEngine) -> TypeEngine:
         type_ = item_type
         item_type = getattr(type_, "item_type", None)
     return type_
+
+
+def creates_a_schema_bound_type(type_: TypeEngine) -> TypeGuard[Enum | DOMAIN]:
+    """Whether this type creates a database object that lives in a schema.
+
+    True for a native ``Enum`` and for ``DOMAIN``: those render the
+    ``CREATE TYPE`` and ``CREATE DOMAIN`` statements, and only they carry a
+    ``schema`` worth reading. Everything else is False, including two shapes
+    that look like they should not be:
+
+    ``Boolean`` is a ``SchemaType`` as well, and it has **no ``schema``
+    attribute at all** — ``Boolean().schema`` raises ``AttributeError``, so a
+    test written against the base class does not merely misreport the most
+    common column type there is, it crashes on it.
+
+    ``Enum(native_enum=False)`` renders as ``VARCHAR`` and creates nothing, so
+    treating it as schema-bound would report a violation, and through
+    ``raise_on_violations`` abort ``create``, ``diff`` and ``check``, for a
+    package that did nothing wrong.
+
+    One predicate rather than one per module: this rule was written out three
+    times — twice correctly under two different names, once against
+    ``SchemaType``, which crashed on any boolean column. Ask this function.
+    """
+    if isinstance(type_, DOMAIN):
+        return True
+    return isinstance(type_, Enum) and bool(type_.native_enum)

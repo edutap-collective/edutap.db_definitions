@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 from sqlalchemy import (
+    Boolean,
     Column,
     Enum,
     ForeignKey,
@@ -128,6 +129,14 @@ def make_definition_with_qualified_enum(
     in a schema of its own instead, the shape `contract` accepts as the other
     legal way to qualify a type (`schema=…`), and which may name a schema no
     table in the package lives in at all.
+
+    The `active` column is load-bearing and not decoration. `Boolean` is a
+    `SchemaType` that carries no `schema` attribute at all, so a fold written
+    against the base class raises `AttributeError` on it — which is exactly
+    what shipped, because every fixture feeding a comparison test happened to
+    use only `Integer`, `String` and `Enum`. Carrying a boolean here puts the
+    most common column type there is through the fold in every test that
+    compares against a live database.
     """
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
     enum_type = (
@@ -140,6 +149,7 @@ def make_definition_with_qualified_enum(
         metadata,
         Column("id", Integer, primary_key=True),
         Column("kind", enum_type, nullable=False),
+        Column("active", Boolean, nullable=False),
         schema=schema,
     )
     return SchemaDefinition(name=name, metadata=metadata)

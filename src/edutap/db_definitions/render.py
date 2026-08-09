@@ -5,14 +5,14 @@ from collections.abc import Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from sqlalchemy import Enum, MetaData, Table, create_mock_engine
+from sqlalchemy import MetaData, Table, create_mock_engine
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.dialects.postgresql import DOMAIN
 from sqlalchemy.schema import DDLElement
 
 from .definition import (
     NAMING_CONVENTION,
     SchemaDefinition,
+    creates_a_schema_bound_type,
     metadata_sequences,
     underlying_type,
 )
@@ -264,10 +264,7 @@ def type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
         for table in definition.metadata.tables.values():
             for column in table.columns:
                 type_ = underlying_type(column.type)
-                is_qualifiable = (isinstance(type_, Enum) and type_.native_enum) or isinstance(
-                    type_, DOMAIN
-                )
-                if is_qualifiable and type_.schema:
+                if creates_a_schema_bound_type(type_) and type_.schema:
                     schemas.add(type_.schema)
     return schemas
 

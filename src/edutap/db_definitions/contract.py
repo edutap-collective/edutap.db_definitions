@@ -4,10 +4,12 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from sqlalchemy import Enum
-from sqlalchemy.dialects.postgresql import DOMAIN
-
-from .definition import NAMING_CONVENTION, SchemaDefinition, underlying_type
+from .definition import (
+    NAMING_CONVENTION,
+    SchemaDefinition,
+    creates_a_schema_bound_type,
+    underlying_type,
+)
 
 
 class ContractError(Exception):
@@ -151,10 +153,7 @@ def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[Contract
         for table in definition.metadata.tables.values():
             for column in table.columns:
                 type_ = underlying_type(column.type)
-                is_unqualifiable_type = isinstance(type_, DOMAIN) or (
-                    isinstance(type_, Enum) and type_.native_enum
-                )
-                if not is_unqualifiable_type or type_.schema:
+                if not creates_a_schema_bound_type(type_) or type_.schema:
                     continue
                 name = type_.name
                 if name is None:

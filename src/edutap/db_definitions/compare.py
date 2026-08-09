@@ -17,9 +17,9 @@ from sqlalchemy import BLANK_SCHEMA, Column, MetaData, Table, inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.sql.schema import RETAIN_SCHEMA
-from sqlalchemy.types import SchemaType, TypeEngine
+from sqlalchemy.types import TypeEngine
 
-from .definition import SchemaDefinition, underlying_type
+from .definition import SchemaDefinition, creates_a_schema_bound_type, underlying_type
 from .render import (
     document,
     merged_metadata,
@@ -142,11 +142,18 @@ def _folded_type(type_: TypeEngine, default_schema: str | None) -> TypeEngine:
     the package's own metadata.
 
     Containers are unwrapped through ``item_type`` the way ``underlying_type``
-    defines it, so this and ``contract``/``render`` agree on which type a column
-    actually creates.
+    defines it, and which types are schema-bound is asked of
+    ``creates_a_schema_bound_type``, so this and ``contract``/``render`` agree
+    on which type a column actually creates.
+
+    That question used to be answered here with ``isinstance(type_,
+    SchemaType)``, which crashed: ``Boolean`` is a ``SchemaType`` with no
+    ``schema`` attribute, so ``check`` and ``diff`` raised ``AttributeError``
+    on any table holding a boolean column. Nothing caught it because no
+    fixture had one — the reason the predicate now lives in exactly one place.
     """
     if underlying_type(type_) is type_:
-        if not isinstance(type_, SchemaType) or type_.schema != default_schema:
+        if not creates_a_schema_bound_type(type_) or type_.schema != default_schema:
             return type_
         # SQLAlchemy 2.0.51's DOMAIN.copy() silently drops default, not_null,
         # check, constraint_name and collation (measured). Harmless *here*: the
