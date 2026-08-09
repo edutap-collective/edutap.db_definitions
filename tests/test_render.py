@@ -12,7 +12,7 @@ from tests.conftest import (
 
 def test_renders_create_table_if_not_exists():
     sql = render_create([make_definition("pkg.a", "table_a")])
-    assert "CREATE TABLE IF NOT EXISTS table_a" in sql
+    assert "CREATE TABLE IF NOT EXISTS public.table_a" in sql
 
 
 def test_wraps_everything_in_one_transaction():
@@ -84,8 +84,8 @@ def test_each_package_gets_a_section_comment():
 
 def test_tables_are_ordered_by_dependency():
     sql = render_create([make_definition_with_foreign_key("pkg.fk")])
-    assert sql.index("CREATE TABLE IF NOT EXISTS parent") < sql.index(
-        "CREATE TABLE IF NOT EXISTS child"
+    assert sql.index("CREATE TABLE IF NOT EXISTS public.parent") < sql.index(
+        "CREATE TABLE IF NOT EXISTS public.child"
     )
 
 

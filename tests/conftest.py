@@ -47,6 +47,7 @@ def make_definition(
     requires: tuple[str, ...] = (),
     convention: dict[str, str] | None = None,
     version_table: str | None = None,
+    schema: str = "public",
 ) -> SchemaDefinition:
     """Build a SchemaDefinition with simple tables for tests."""
     metadata = MetaData(naming_convention=convention or NAMING_CONVENTION)
@@ -56,6 +57,7 @@ def make_definition(
             metadata,
             Column("id", Integer, primary_key=True),
             Column("label", String(32), nullable=False),
+            schema=schema,
         )
     return SchemaDefinition(
         name=name,
@@ -65,15 +67,16 @@ def make_definition(
     )
 
 
-def make_definition_with_foreign_key(name: str) -> SchemaDefinition:
+def make_definition_with_foreign_key(name: str, schema: str = "public") -> SchemaDefinition:
     """Build a definition whose second table references the first."""
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    parent = Table("parent", metadata, Column("id", Integer, primary_key=True))
+    parent = Table("parent", metadata, Column("id", Integer, primary_key=True), schema=schema)
     Table(
         "child",
         metadata,
         Column("id", Integer, primary_key=True),
         Column("parent_id", Integer, ForeignKey(parent.c.id), nullable=False),
+        schema=schema,
     )
     return SchemaDefinition(name=name, metadata=metadata)
 

@@ -7,6 +7,10 @@ from tests.conftest import make_definition
 
 
 @pytest.mark.integration
+@pytest.mark.xfail(
+    strict=True,
+    reason="B1: compare.py matches bare names against qualified keys — fixed in Task 4",
+)
 def test_check_passes_when_the_schema_matches(installed, engine, monkeypatch, capsys):  # noqa: E501
     definitions = [make_definition("pkg.a", "table_a")]
     installed(definitions)

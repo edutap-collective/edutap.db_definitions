@@ -6,13 +6,13 @@ def test_create_writes_the_file(installed, tmp_path, capsys):
     installed([make_definition("pkg.a", "table_a")])
     target = tmp_path / "create.sql"
     assert main(["create", "--out", str(target)]) == 0
-    assert "CREATE TABLE IF NOT EXISTS table_a" in target.read_text()
+    assert "CREATE TABLE IF NOT EXISTS public.table_a" in target.read_text()
 
 
 def test_create_prints_to_stdout_without_out(installed, capsys):
     installed([make_definition("pkg.a", "table_a")])
     assert main(["create"]) == 0
-    assert "CREATE TABLE IF NOT EXISTS table_a" in capsys.readouterr().out
+    assert "CREATE TABLE IF NOT EXISTS public.table_a" in capsys.readouterr().out
 
 
 def test_create_split_writes_one_file_per_package(installed, tmp_path):
