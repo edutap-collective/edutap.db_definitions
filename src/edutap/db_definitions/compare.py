@@ -139,11 +139,18 @@ def _folded_type(type_: TypeEngine, default_schema: str | None) -> TypeEngine:
     if underlying_type(type_) is type_:
         if not isinstance(type_, SchemaType) or type_.schema != default_schema:
             return type_
-        # SQLAlchemy 2.0.51's DOMAIN.copy() silently drops default, not_null, check
-        # and collation (measured). Harmless for this fold: the comparison only
-        # needs the type's name and schema, and rendering always goes through the
-        # declared type, never this copy — but a shallow spot to remember if this
-        # helper is ever reused for something that renders from the fold itself.
+        # SQLAlchemy 2.0.51's DOMAIN.copy() silently drops default, not_null,
+        # check, constraint_name and collation (measured). Harmless *here*: the
+        # comparison needs the type's name and schema, and Alembic does not
+        # compare a domain's constraints at all.
+        #
+        # Not harmless in general, and what used to stand here — that rendering
+        # always goes through the declared type, never a copy — was false.
+        # `render.merged_metadata` copies every table with `Table.to_metadata`,
+        # which reaches this same `DOMAIN.copy()`, so `create` emits a domain
+        # stripped of its CHECK. See `render.merged_metadata` and the limits
+        # section of docs/explanation.md; do not reuse this helper for anything
+        # that renders from the fold.
         unqualified = type_.copy()
         unqualified.schema = None
         return unqualified

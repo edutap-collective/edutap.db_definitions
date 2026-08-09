@@ -23,6 +23,10 @@
   needs. An unqualified sequence previously applied into `public` while its
   table sat elsewhere, after which `check` aborted with `UndefinedTable`
   rather than reporting a deviation.
+- Documented a data-integrity hazard: a PostgreSQL `DOMAIN` is created
+  without its `DEFAULT`, `NOT NULL` and `CHECK`, because SQLAlchemy 2.0's
+  `DOMAIN.copy()` drops them and Alembic does not compare them. Pinned by
+  tests so a future SQLAlchemy fix is noticed.
 - New optional `SchemaDefinition.version_table_schema` field, required only
   when a package holds tables in more than one schema and sets
   `version_table`.

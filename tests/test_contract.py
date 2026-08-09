@@ -4,7 +4,11 @@ from sqlalchemy.dialects.postgresql import ARRAY
 
 from edutap.db_definitions.contract import ContractError, check_contract, raise_on_violations
 from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
-from tests.conftest import make_cross_package_definitions, make_definition
+from tests.conftest import (
+    make_cross_package_definitions,
+    make_definition,
+    make_definition_with_domain,
+)
 
 
 def test_a_consistent_set_has_no_violations():
@@ -262,3 +266,20 @@ def test_a_foreign_key_across_schemas_still_needs_a_declared_dependency():
     kinds = [violation.kind for violation in check_contract([borrower, owner])]
 
     assert "undeclared_dependency" in kinds
+
+
+def test_an_unqualified_domain_is_reported():
+    """`DOMAIN` always creates a type; it has no `native_enum=False` escape."""
+    violations = check_contract([make_definition_with_domain("pkg.d", schema="alpha")])
+
+    kinds = [v.kind for v in violations]
+    assert "unqualified_type" in kinds
+    assert any(
+        "positive_int" in v.message and "alpha.thing.amount" in v.message for v in violations
+    )
+
+
+def test_a_qualified_domain_is_accepted():
+    definition = make_definition_with_domain("pkg.d", schema="alpha", type_schema="typelib")
+
+    assert [v for v in check_contract([definition]) if v.kind == "unqualified_type"] == []

@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Table,
 )
+from sqlalchemy.dialects.postgresql import DOMAIN
 
 from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
 
@@ -139,6 +140,42 @@ def make_definition_with_qualified_enum(
         metadata,
         Column("id", Integer, primary_key=True),
         Column("kind", enum_type, nullable=False),
+        schema=schema,
+    )
+    return SchemaDefinition(name=name, metadata=metadata)
+
+
+def make_definition_with_domain(
+    name: str,
+    schema: str = "public",
+    type_schema: str | None = None,
+    constrained: bool = False,
+) -> SchemaDefinition:
+    """Build a definition whose column type is a PostgreSQL `DOMAIN`.
+
+    `DOMAIN` is special-cased in three places — `contract._unqualified_types`,
+    `render.type_schemas` and `compare._folded_type` — and had no test of its
+    own in any of them.
+
+    `type_schema=None` leaves the domain unqualified, the shape `contract`
+    reports as `unqualified_type`; passing one pins it to a schema of its own.
+
+    `constrained=True` adds exactly the parts SQLAlchemy 2.0's `DOMAIN.copy()`
+    silently drops — see the tests that pin that loss, which is a live
+    data-integrity hazard and not a cosmetic one.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    extras = (
+        {"default": "1", "not_null": True, "constraint_name": "positive", "check": "VALUE > 0"}
+        if constrained
+        else {}
+    )
+    domain = DOMAIN("positive_int", Integer, schema=type_schema, **extras)
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("amount", domain, nullable=False),
         schema=schema,
     )
     return SchemaDefinition(name=name, metadata=metadata)

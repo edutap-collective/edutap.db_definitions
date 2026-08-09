@@ -36,6 +36,7 @@ from edutap.db_definitions.execute import apply_sql
 from edutap.db_definitions.render import render_create
 from tests.conftest import (
     make_definition,
+    make_definition_with_domain,
     make_definition_with_enum_and_sequence,
     make_definition_with_qualified_enum,
 )
@@ -590,3 +591,47 @@ def test_a_schema_that_only_holds_the_history_table_is_still_ours(engine_with_sc
 
     with engine_with_schemas.connect() as connection:
         assert foreign_tables(connection, [definition]) == ["history.someone_elses"]
+
+
+def test_a_domain_declared_in_the_default_schema_does_not_churn(engine_with_schemas):
+    """`_folded_type` has a `DOMAIN` branch; only its `Enum` twin was covered.
+
+    Reflection omits the default schema for a domain exactly as for an enum, so
+    with `compare_type=True` a domain declared `schema="public"` — a shape the
+    contract accepts — would be reported as `modify_type` on every run.
+    """
+    definition = make_definition_with_domain("pkg.d", schema="public", type_schema="public")
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+
+    with engine_with_schemas.connect() as connection:
+        assert describe_changes(connection, [definition]) == []
+        assert "ALTER COLUMN" not in render_diff(connection, [definition])
+
+
+def test_a_domains_lost_constraints_are_invisible_to_check(engine_with_schemas):
+    """A pinned data-integrity hazard, end to end. Do not "fix" this test.
+
+    `merged_metadata` copies the column through SQLAlchemy 2.0.51's
+    `DOMAIN.copy()`, which drops `default`, `not_null` and `check`. The created
+    domain therefore accepts values the declaration forbids — and `check` calls
+    it in sync, because Alembic does not compare a domain's constraints either.
+
+    Both halves are asserted on purpose: the database accepting `-5` is the
+    harm, and `check` staying green is why nobody notices. When SQLAlchemy fixes
+    `DOMAIN.copy()`, the insert starts failing and this test goes red — rewrite
+    it to assert the constraint holds, do not delete it.
+    """
+    definition = make_definition_with_domain(
+        "pkg.d", schema="pass_builder", type_schema="typelib", constrained=True
+    )
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+
+    with engine_with_schemas.begin() as connection:
+        connection.execute(text("INSERT INTO pass_builder.thing (id, amount) VALUES (1, -5)"))
+
+    with engine_with_schemas.connect() as connection:
+        assert (
+            connection.execute(text("SELECT amount FROM pass_builder.thing WHERE id = 1")).scalar()
+            == -5
+        )
+        assert describe_changes(connection, [definition]) == []

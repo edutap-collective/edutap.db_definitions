@@ -7,6 +7,7 @@ from tests.conftest import (
     make_cross_package_definitions,
     make_definition,
     make_definition_with_deferred_foreign_key,
+    make_definition_with_domain,
     make_definition_with_enum_and_sequence,
     make_definition_with_foreign_key,
     make_definition_with_qualified_enum,
@@ -418,3 +419,59 @@ def test_a_dotted_version_table_does_not_produce_a_bogus_schema():
 
     assert document.count("CREATE SCHEMA") == 1
     assert "pass_builder.mig" not in document
+
+
+def test_a_qualified_domain_is_created_in_its_own_schema():
+    """`DOMAIN` is special-cased in three modules and had no test in any of them."""
+    definition = make_definition_with_domain("pkg.d", schema="alpha", type_schema="typelib")
+
+    sql = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS typelib;" in sql
+    assert "CREATE DOMAIN typelib.positive_int AS INTEGER" in sql
+    assert sql.index("CREATE DOMAIN") < sql.index("CREATE TABLE IF NOT EXISTS alpha.thing")
+
+
+def test_an_unqualified_domain_renders_without_a_schema():
+    """The shape `contract` reports as `unqualified_type`, rendered.
+
+    `create` never reaches this in practice — the contract check aborts first —
+    but it is what makes the check's reason concrete: the domain lands wherever
+    `search_path` resolves, while the table sits in `alpha`.
+    """
+    sql = render_create([make_definition_with_domain("pkg.d", schema="alpha")])
+
+    assert "CREATE DOMAIN positive_int AS INTEGER" in sql
+    assert "CREATE SCHEMA IF NOT EXISTS typelib;" not in sql
+
+
+def test_a_domains_constraints_are_lost_in_the_rendered_ddl():
+    """A pinned defect, not a desired behaviour. Do not "fix" this test.
+
+    Measured on SQLAlchemy 2.0.51: `merged_metadata` copies each table with
+    `Table.to_metadata`, which copies each column with `Column._copy`, which for
+    a `DOMAIN` calls `DOMAIN.copy()` — and that silently drops `default`,
+    `not_null`, `check`, `constraint_name` and `collation`.
+
+    A domain declared `DEFAULT '1' NOT NULL CHECK (VALUE > 0)` is therefore
+    created as a bare `INTEGER` alias, so the database accepts values the
+    declaration forbids, and `check` reports "in sync" because Alembic does not
+    compare a domain's constraints either.
+
+    This test exists so that a SQLAlchemy release which fixes `DOMAIN.copy()`
+    turns the output green-to-red here instead of changing generated DDL
+    unnoticed. When that happens, assert the constraints are present rather than
+    deleting the test.
+    """
+    definition = make_definition_with_domain(
+        "pkg.d", schema="alpha", type_schema="typelib", constrained=True
+    )
+    declared = definition.metadata.tables["alpha.thing"].c.amount.type
+    assert declared.not_null is True
+    assert declared.check is not None
+
+    sql = render_create([definition])
+
+    assert "CREATE DOMAIN typelib.positive_int AS INTEGER;" in sql
+    assert "CHECK" not in sql
+    assert "DEFAULT" not in sql

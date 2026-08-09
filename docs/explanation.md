@@ -215,6 +215,33 @@ already part of the package contract for this reason — as the answer for
 packages whose migrations carry data, rather than trying to stretch a
 metadata diff to cover it.
 
+### A domain loses its constraints on the way out
+
+One limit is not Alembic's and is worth separating from the rest, because it
+silently weakens the database rather than merely failing to describe it.
+
+Rendering goes through `merged_metadata`, which copies every table with
+`Table.to_metadata`; that copies every column with `Column._copy`; and that,
+for a `DOMAIN`, calls SQLAlchemy 2.0.51's `DOMAIN.copy()`, which drops
+`default`, `not_null`, `check`, `constraint_name` and `collation` (measured).
+A domain declared with `DEFAULT '1' NOT NULL CHECK (VALUE > 0)` is created as
+`CREATE DOMAIN typelib.positive_int AS INTEGER;`, so the column accepts values
+its own declaration forbids.
+`check` then reports the schema as in sync, because Alembic does not compare a
+domain's constraints — the two blind spots line up and leave nothing to notice.
+
+The loss belongs to SQLAlchemy, not to this tool, and the honest repair is to
+rebuild the declared type onto the copied column in `merged_metadata` rather
+than to work around it further downstream.
+It has not been built: it means reconstructing a `DOMAIN` field by field
+against a constructor signature that may change, for a construct no eduTAP
+package uses today.
+What is built is a pair of tests, one rendering-level and one against a live
+database, that pin the current output — so a SQLAlchemy release that fixes
+`DOMAIN.copy()` turns those tests red instead of changing generated DDL
+unnoticed.
+{doc}`how-to` says what to do in the meantime.
+
 None of this is a defect to route around inside `edutap.db_definitions`.
 It is the reason `diff` prints its limits into the document it generates,
 and the reason `apply` insists that a human reads that document before

@@ -75,6 +75,30 @@ The check walks columns, so a type that is attached only to the `MetaData`
 (`Enum(..., metadata=metadata)`) and never assigned to a column is invisible
 to it — give every type you declare a column to live on.
 
+````{warning}
+A `DOMAIN` reaches the database **without its constraints**.
+Measured on SQLAlchemy 2.0.51: rendering copies each table's columns, and
+`DOMAIN.copy()` silently drops `default`, `not_null`, `check`,
+`constraint_name` and `collation`.
+A domain declared
+
+```python
+DOMAIN("positive_int", Integer, schema="typelib",
+       default="1", not_null=True, check="VALUE > 0")
+```
+
+is created as `CREATE DOMAIN typelib.positive_int AS INTEGER;` — an alias that
+accepts `-5` and `NULL`.
+`check` does not catch it either: Alembic does not compare a domain's
+constraints, so the schema is reported as in sync.
+
+This is a data-integrity hazard, not a cosmetic gap.
+Until SQLAlchemy fixes the copy, do not rely on a domain to enforce anything.
+Put the rule where the tool does carry it — a `CheckConstraint` on the column,
+or a `NOT NULL` on the column itself — and keep the domain for the type alias
+alone.
+````
+
 Give an explicit `Sequence` its schema too.
 
 ```python

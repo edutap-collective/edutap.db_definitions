@@ -118,6 +118,21 @@ def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
     Merging is also what keeps a comparison honest — Alembic compares one
     MetaData against the whole schema, and comparing package by package would
     report every other package's tables as removed.
+
+    Known loss, and a real one: ``Table.to_metadata`` copies each column through
+    ``Column._copy``, which for a ``DOMAIN`` reaches SQLAlchemy 2.0.51's
+    ``DOMAIN.copy()`` — and that silently drops ``default``, ``not_null``,
+    ``check``, ``constraint_name`` and ``collation`` (measured). The document
+    rendered from this metadata therefore creates
+    ``CREATE DOMAIN typelib.positive_int AS INTEGER;`` for a domain the package
+    declared with ``DEFAULT '1' NOT NULL CHECK (VALUE > 0)``, so the database
+    accepts values the declaration forbids. ``check`` does not catch it either:
+    Alembic does not compare a domain's constraints.
+
+    The loss is SQLAlchemy's, not this function's, and the fix would be to
+    rebuild the declared type onto the copied column rather than to work around
+    it here. ``tests/test_render.py`` pins the current output so that a future
+    SQLAlchemy release changing it is noticed rather than silently absorbed.
     """
     merged = MetaData(naming_convention=_shared_naming_convention(definitions))
     for definition in definitions:
