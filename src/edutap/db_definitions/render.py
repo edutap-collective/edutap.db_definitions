@@ -5,11 +5,12 @@ from collections.abc import Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from sqlalchemy import MetaData, Table, create_mock_engine
+from sqlalchemy import Enum, MetaData, Table, create_mock_engine
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import DOMAIN
 from sqlalchemy.schema import DDLElement
 
-from .definition import NAMING_CONVENTION, SchemaDefinition
+from .definition import NAMING_CONVENTION, SchemaDefinition, underlying_type
 
 _MOCK_URL = "postgresql+psycopg://"
 
@@ -189,25 +190,66 @@ def _render_package(merged: MetaData, definition: SchemaDefinition) -> tuple[lis
 
 
 def _needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
-    """Return every schema the selection needs, data tables and history alike.
+    """Return every schema the selection's tables and history need, types apart.
 
     A package may keep its migration history in a schema it holds no data table
     in — ``version_table_schema`` exists precisely to allow that. Deriving the
     list from ``SchemaDefinition.schemas`` alone would then skip it, and
     Alembic's first ``CREATE TABLE alembic_version_…`` would fail on a schema
     nobody created.
+
+    Reads ``version_table_schema``/``schemas`` directly rather than parsing
+    ``version_table_key`` apart again: ``version_table`` is free-form and may
+    itself contain a dot (``"mig.state"``), and re-splitting the qualified name
+    on the first dot would then invent a schema nobody asked for.
+
+    Types are handled separately, by :func:`_type_schemas`: a type's schema is
+    the type object's own decision, independent of which schema its column's
+    table lives in.
     """
     schemas = {schema for definition in definitions for schema in definition.schemas}
     for definition in definitions:
-        key = definition.version_table_key
-        if key:
-            schemas.add(key.rsplit(".", 1)[0])
+        if not definition.version_table:
+            continue
+        schema = definition.version_table_schema or (
+            definition.schemas[0] if len(definition.schemas) == 1 else None
+        )
+        if schema:
+            schemas.add(schema)
     return schemas
 
 
-def _schema_statements(definitions: Sequence[SchemaDefinition]) -> list[str]:
-    """Return one ``CREATE SCHEMA`` per schema the selection needs, deduplicated."""
-    needed = sorted(_needed_schemas(definitions) - _ALWAYS_PRESENT)
+def _type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+    """Return every schema a qualified native enum or domain type names.
+
+    Reads the schema straight off the type object instead of pattern-matching
+    the rendered SQL, so this cannot drift out of sync with what :func:`_emit`
+    actually creates. Mirrors ``contract._unqualified_types``'s notion of a
+    type that gets its own ``CREATE TYPE``/``CREATE DOMAIN``: a native
+    ``Enum`` or a ``DOMAIN``, unwrapped through any container the same way —
+    via the shared :func:`~edutap.db_definitions.definition.underlying_type`.
+
+    A type may be qualified into a schema none of these definitions holds a
+    table in at all (``Enum(..., schema="typelib")`` on a table in a different
+    schema); that schema still needs creating, so it is not filtered against
+    ``_needed_schemas`` here — the caller unions the two sets.
+    """
+    schemas: set[str] = set()
+    for definition in definitions:
+        for table in definition.metadata.tables.values():
+            for column in table.columns:
+                type_ = underlying_type(column.type)
+                is_qualifiable = (isinstance(type_, Enum) and type_.native_enum) or isinstance(
+                    type_, DOMAIN
+                )
+                if is_qualifiable and type_.schema:
+                    schemas.add(type_.schema)
+    return schemas
+
+
+def _schema_statements(schemas: set[str]) -> list[str]:
+    """Return one ``CREATE SCHEMA`` per schema, deduplicated and ordered."""
+    needed = sorted(schemas - _ALWAYS_PRESENT)
     return [f"CREATE SCHEMA IF NOT EXISTS {_PREPARER.quote(schema)};" for schema in needed]
 
 
@@ -273,18 +315,31 @@ def render_create(
         # first table that could use it.
         types.extend(statement for statement in package_types if statement not in types)
         sections.extend(package_body)
-    preamble = _preamble(definitions, types)
+    preamble = _preamble(definitions, definitions, types)
     return document(_header(definitions, timestamp), [*preamble, *sections], ddl_role)
 
 
-def _preamble(definitions: Sequence[SchemaDefinition], types: Sequence[str]) -> list[str]:
+def _preamble(
+    own: Sequence[SchemaDefinition],
+    all_definitions: Sequence[SchemaDefinition],
+    types: Sequence[str],
+) -> list[str]:
     """Return the schema and type statements that precede the first table.
 
     Schemas come first: a qualified type cannot be created in a schema that
     does not exist yet.
+
+    A file's schema set is the set its own content needs: ``own``'s tables and
+    version table, plus the type schemas of ``all_definitions`` — not just
+    ``own``'s. The type block itself is global (:func:`_render_package` returns
+    every selected package's types for each package section, see its
+    docstring), so a split file may need to create a schema it holds no table
+    of its own in, just to house another package's type. ``IF NOT EXISTS``
+    makes that harmless.
     """
     lines: list[str] = []
-    schemas = _schema_statements(definitions)
+    needed = _needed_schemas(own) | _type_schemas(all_definitions)
+    schemas = _schema_statements(needed)
     if schemas:
         lines.extend([_SCHEMAS_SECTION, *schemas])
     if types:
@@ -308,7 +363,7 @@ def render_create_split(
     documents: dict[str, str] = {}
     for definition in definitions:
         types, body = _render_package(merged, definition)
-        preamble = _preamble([definition], types)
+        preamble = _preamble([definition], definitions, types)
         documents[definition.name] = document(
             _header([definition], timestamp), [*preamble, *body], ddl_role
         )

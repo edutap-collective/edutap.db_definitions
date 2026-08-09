@@ -9,6 +9,7 @@ from tests.conftest import (
     make_definition_with_deferred_foreign_key,
     make_definition_with_enum_and_sequence,
     make_definition_with_foreign_key,
+    make_definition_with_qualified_enum,
 )
 
 
@@ -284,3 +285,107 @@ def test_a_schema_that_only_holds_the_version_table_is_created_too():
     document = render_create([definition])
 
     assert "CREATE SCHEMA IF NOT EXISTS history;" in document
+
+
+def test_a_schema_is_created_before_its_own_type_and_the_type_before_the_table():
+    """The ordering guarantee, made explicit for the schema/type/table chain.
+
+    A mutation that emits types before schemas passes every other test in this
+    file — nothing else here uses a schema-qualified type — and would still
+    break `CREATE TYPE alpha.kind` against a schema that does not exist yet.
+    """
+    definition = make_definition_with_qualified_enum("pkg.a", schema="alpha", type_name="kind")
+
+    document = render_create([definition])
+
+    assert (
+        document.index("CREATE SCHEMA IF NOT EXISTS alpha;")
+        < document.index("CREATE TYPE alpha.kind")
+        < document.index("CREATE TABLE IF NOT EXISTS alpha.thing")
+    )
+
+
+def test_split_a_schema_is_created_before_its_own_type_and_the_type_before_the_table():
+    """The same ordering guarantee, for a single-package split file."""
+    definition = make_definition_with_qualified_enum("pkg.a", schema="alpha", type_name="kind")
+
+    document = render_create_split([definition])["pkg.a"]
+
+    assert (
+        document.index("CREATE SCHEMA IF NOT EXISTS alpha;")
+        < document.index("CREATE TYPE alpha.kind")
+        < document.index("CREATE TABLE IF NOT EXISTS alpha.thing")
+    )
+
+
+def test_split_creates_the_schema_a_foreign_package_type_needs_too():
+    """A split file's type block is global (`_render_package` returns every
+    selected package's types for each package section), so `pkg.a.sql` also
+    contains `CREATE TYPE beta.kind_b` even though `pkg.a` holds no table in
+    `beta`. Without creating `beta` first, applying `pkg.a.sql` alone to a
+    fresh database fails with `InvalidSchemaName: schema "beta" does not
+    exist` — measured against a live PostgreSQL container.
+    """
+    a = make_definition_with_qualified_enum("pkg.a", schema="alpha", type_name="kind_a")
+    b = make_definition_with_qualified_enum("pkg.b", schema="beta", type_name="kind_b")
+
+    documents = render_create_split([a, b])
+
+    for document in documents.values():
+        assert document.index("CREATE SCHEMA IF NOT EXISTS alpha;") < document.index(
+            "CREATE TYPE alpha.kind_a"
+        )
+        assert document.index("CREATE SCHEMA IF NOT EXISTS beta;") < document.index(
+            "CREATE TYPE beta.kind_b"
+        )
+
+
+def test_a_type_schema_not_shared_by_any_table_is_still_created():
+    """`schema=…` may qualify a type into a schema no table in the selection
+    lives in at all — the contract accepts this as an alternative to
+    `inherit_schema=True`. Deriving schemas from table/version data alone
+    would miss it: measured, applying the document then fails with
+    `InvalidSchemaName: schema "typelib" does not exist`.
+    """
+    definition = make_definition_with_qualified_enum(
+        "pkg.a", schema="alpha2", type_name="kind", type_schema="typelib"
+    )
+
+    document = render_create([definition])
+
+    assert document.index("CREATE SCHEMA IF NOT EXISTS typelib;") < document.index(
+        "CREATE TYPE typelib.kind"
+    )
+
+
+def test_a_schema_is_created_from_its_tables_even_without_a_version_table():
+    """Mutation check: a fix that reads only the version-table schema and
+    ignores `SchemaDefinition.schemas` would pass every other test in this
+    file, because `make_definition` always sets a `version_table` whose
+    derived schema happens to agree with the table schema. A definition
+    without one — the shape `make_definition_with_foreign_key` and friends
+    produce — exposes the gap.
+    """
+    definition = make_definition_with_foreign_key("pkg.a", schema="pass_builder")
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS pass_builder;" in document
+
+
+def test_a_dotted_version_table_does_not_produce_a_bogus_schema():
+    """`version_table` is free-form and may itself contain a dot. Deriving the
+    version table's schema by re-splitting the already-qualified
+    `version_table_key` on its first dot would then invent a schema nobody
+    asked for — measured, `"pass_builder.mig"` alongside the real
+    `"pass_builder"`.
+    """
+    definition = replace(
+        make_definition("pkg.a", "thing", schema="pass_builder"),
+        version_table="mig.state",
+    )
+
+    document = render_create([definition])
+
+    assert document.count("CREATE SCHEMA") == 1
+    assert "pass_builder.mig" not in document

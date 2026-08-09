@@ -106,6 +106,36 @@ def make_definition_with_enum_and_sequence(name: str, schema: str = "public") ->
     return SchemaDefinition(name=name, metadata=metadata)
 
 
+def make_definition_with_qualified_enum(
+    name: str,
+    schema: str = "public",
+    type_name: str = "kind",
+    type_schema: str | None = None,
+) -> SchemaDefinition:
+    """Build a definition whose enum type is schema-qualified.
+
+    `type_schema=None` uses `inherit_schema=True`, so the type takes the
+    table's own schema — the common case. Passing `type_schema` puts the type
+    in a schema of its own instead, the shape `contract` accepts as the other
+    legal way to qualify a type (`schema=…`), and which may name a schema no
+    table in the package lives in at all.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    enum_type = (
+        Enum("a", "b", name=type_name, inherit_schema=True)
+        if type_schema is None
+        else Enum("a", "b", name=type_name, schema=type_schema)
+    )
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("kind", enum_type, nullable=False),
+        schema=schema,
+    )
+    return SchemaDefinition(name=name, metadata=metadata)
+
+
 def make_definition_with_deferred_foreign_key(
     name: str, schema: str = "public"
 ) -> SchemaDefinition:

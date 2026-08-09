@@ -6,9 +6,8 @@ from typing import NamedTuple
 
 from sqlalchemy import Enum
 from sqlalchemy.dialects.postgresql import DOMAIN
-from sqlalchemy.types import TypeEngine
 
-from .definition import NAMING_CONVENTION, SchemaDefinition
+from .definition import NAMING_CONVENTION, SchemaDefinition, underlying_type
 
 
 class ContractError(Exception):
@@ -115,23 +114,6 @@ def _undeclared_dependencies(definitions: Sequence[SchemaDefinition]) -> list[Co
     return violations
 
 
-def _underlying_type(type_: TypeEngine) -> TypeEngine:
-    """Follow ``ARRAY`` (and any other container) down to the type it wraps.
-
-    ``ARRAY(ENUM(...))`` renders the very same unqualified ``CREATE TYPE`` as
-    a bare ``ENUM(...)`` column does: measured, ``ARRAY(Enum(...)).item_type``
-    is the ``Enum`` instance, and it is that instance's ``.schema`` — not the
-    ``ARRAY``'s, which has none — that decides where the type is created. A
-    check that inspects ``column.type`` alone stays silent on every enum or
-    domain hidden inside an array.
-    """
-    item_type = getattr(type_, "item_type", None)
-    while item_type is not None:
-        type_ = item_type
-        item_type = getattr(type_, "item_type", None)
-    return type_
-
-
 def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
     """Report an enum or domain type that does not say which schema it lives in.
 
@@ -168,7 +150,7 @@ def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[Contract
         sites: dict[str, list[str]] = defaultdict(list)
         for table in definition.metadata.tables.values():
             for column in table.columns:
-                type_ = _underlying_type(column.type)
+                type_ = underlying_type(column.type)
                 is_unqualifiable_type = isinstance(type_, DOMAIN) or (
                     isinstance(type_, Enum) and type_.native_enum
                 )

@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from sqlalchemy import MetaData
+from sqlalchemy.types import TypeEngine
 
 NAMING_CONVENTION: dict[str, str] = {
     "pk": "pk_%(table_name)s",
@@ -103,3 +104,24 @@ class SchemaDefinition:
                 f"({', '.join(self.schemas)}), so version_table_schema must say which "
                 f"one holds {self.version_table!r}."
             )
+
+
+def underlying_type(type_: TypeEngine) -> TypeEngine:
+    """Follow ``ARRAY`` (and any other container) down to the type it wraps.
+
+    ``ARRAY(ENUM(...))`` renders the very same unqualified ``CREATE TYPE`` as
+    a bare ``ENUM(...)`` column does: measured, ``ARRAY(Enum(...)).item_type``
+    is the ``Enum`` instance, and it is that instance's ``.schema`` — not the
+    ``ARRAY``'s, which has none — that decides where the type is created. A
+    check that inspects ``column.type`` alone stays silent on every enum or
+    domain hidden inside an array.
+
+    Shared between ``contract`` (which types are unqualified) and ``render``
+    (which schemas a qualified type needs) so the two cannot drift apart on
+    what "the type a column actually creates" means.
+    """
+    item_type = getattr(type_, "item_type", None)
+    while item_type is not None:
+        type_ = item_type
+        item_type = getattr(type_, "item_type", None)
+    return type_
