@@ -189,8 +189,13 @@ def _render_package(merged: MetaData, definition: SchemaDefinition) -> tuple[lis
     return types, [f"-- ===== {definition.name} =====", *rest]
 
 
-def _needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+def needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     """Return every schema the selection's tables and history need, types apart.
+
+    Public because ``compare`` has to mean the same thing by "the package's
+    schemas" as ``render`` does — it scopes ``foreign_tables`` and the
+    comparison by this set, and a second, subtly different implementation there
+    would make ``create`` create a schema that ``check`` then does not look in.
 
     A package may keep its migration history in a schema it holds no data table
     in — ``version_table_schema`` exists precisely to allow that. Deriving the
@@ -203,7 +208,7 @@ def _needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     itself contain a dot (``"mig.state"``), and re-splitting the qualified name
     on the first dot would then invent a schema nobody asked for.
 
-    Types are handled separately, by :func:`_type_schemas`: a type's schema is
+    Types are handled separately, by :func:`type_schemas`: a type's schema is
     the type object's own decision, independent of which schema its column's
     table lives in.
     """
@@ -219,7 +224,7 @@ def _needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     return schemas
 
 
-def _type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+def type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     """Return every schema a qualified native enum or domain type names.
 
     Reads the schema straight off the type object instead of pattern-matching
@@ -232,7 +237,7 @@ def _type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     A type may be qualified into a schema none of these definitions holds a
     table in at all (``Enum(..., schema="typelib")`` on a table in a different
     schema); that schema still needs creating, so it is not filtered against
-    ``_needed_schemas`` here — the caller unions the two sets.
+    ``needed_schemas`` here — the caller unions the two sets.
     """
     schemas: set[str] = set()
     for definition in definitions:
@@ -247,7 +252,7 @@ def _type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     return schemas
 
 
-def _schema_statements(schemas: set[str]) -> list[str]:
+def schema_statements(schemas: set[str]) -> list[str]:
     """Return one ``CREATE SCHEMA`` per schema, deduplicated and ordered."""
     needed = sorted(schemas - _ALWAYS_PRESENT)
     return [f"CREATE SCHEMA IF NOT EXISTS {_PREPARER.quote(schema)};" for schema in needed]
@@ -338,8 +343,8 @@ def _preamble(
     makes that harmless.
     """
     lines: list[str] = []
-    needed = _needed_schemas(own) | _type_schemas(all_definitions)
-    schemas = _schema_statements(needed)
+    needed = needed_schemas(own) | type_schemas(all_definitions)
+    schemas = schema_statements(needed)
     if schemas:
         lines.extend([_SCHEMAS_SECTION, *schemas])
     if types:

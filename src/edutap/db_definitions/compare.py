@@ -6,13 +6,26 @@ from collections.abc import Iterable, Iterator, Sequence
 from alembic.autogenerate import compare_metadata, produce_migrations
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from alembic.operations.ops import AddColumnOp, CreateTableOp, MigrateOperation
-from sqlalchemy import BLANK_SCHEMA, MetaData, inspect
+from alembic.operations.ops import (
+    AddColumnOp,
+    AlterColumnOp,
+    CreateTableOp,
+    MigrateOperation,
+)
+from sqlalchemy import BLANK_SCHEMA, Column, MetaData, Table, inspect
 from sqlalchemy.engine import Connection
 from sqlalchemy.sql.schema import RETAIN_SCHEMA
+from sqlalchemy.types import SchemaType, TypeEngine
 
-from .definition import SchemaDefinition
-from .render import document, merged_metadata, package_provenance
+from .definition import SchemaDefinition, underlying_type
+from .render import (
+    document,
+    merged_metadata,
+    needed_schemas,
+    package_provenance,
+    schema_statements,
+    type_schemas,
+)
 
 _DESTRUCTIVE = ("DROP TABLE", "DROP COLUMN", "DROP CONSTRAINT", "DROP INDEX")
 
@@ -30,7 +43,20 @@ def _known_names(definitions: Sequence[SchemaDefinition]) -> set[str]:
 
 
 def _owned_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
-    return {schema for definition in definitions for schema in definition.schemas}
+    """Return the schemas the selection is responsible for.
+
+    Delegates to ``render.needed_schemas`` so the two modules cannot disagree.
+    It includes a ``version_table_schema`` that holds no data table, which
+    matters here twice: such a schema is one ``render_create`` creates, so the
+    comparison has to look in it, and ``foreign_tables`` has to report what else
+    lives there. Other packages' history tables in a shared history schema are
+    still filtered by the ``alembic_version*`` prefix rule.
+
+    Type schemas are deliberately *not* included. A schema that merely houses a
+    ``CREATE TYPE`` holds none of our tables, so scanning it would report
+    somebody else's tables as foreign.
+    """
+    return needed_schemas(definitions)
 
 
 def comparison_metadata(
@@ -50,6 +76,13 @@ def comparison_metadata(
     database agree; this copy exists solely so the comparison sees the shape
     reflection produces. Rendering, the contract checks and ``foreign_tables``
     all keep using the declared names.
+
+    Three things carry a schema and all three have to be folded: the table, the
+    foreign key's target, and the column's *type*. Reflection omits the default
+    schema for a native enum or domain in exactly the same way, so with
+    ``compare_type=True`` a type declared ``schema="public"`` — the form
+    ``contract._unqualified_types`` recommends — would otherwise be reported as
+    ``modify_type`` on every run.
 
     The default schema is read from the connection rather than assumed to be
     ``public``: with ``search_path = "$user", public`` and a matching schema it
@@ -71,12 +104,40 @@ def comparison_metadata(
         # it: `schema is None` means "take the target MetaData's schema", which
         # for `folded` is no schema at all.
         schema = None if table.schema == default_schema else table.schema
-        table.to_metadata(
+        copy = table.to_metadata(
             folded,
             schema=schema,  # ty: ignore[invalid-argument-type]
             referred_schema_fn=referred_schema_fn,
         )
+        for column in copy.columns:
+            column.type = _folded_type(column.type, default_schema)
     return folded
+
+
+def _folded_type(type_: TypeEngine, default_schema: str | None) -> TypeEngine:
+    """Return ``type_`` with the default schema cleared off the type it creates.
+
+    Rebuilds rather than assigns to ``type_.schema``, because the copy is not as
+    deep as it looks: measured, ``Table.to_metadata`` copies a bare ``Enum`` but
+    hands an ``ARRAY``'s ``item_type`` straight through, so the innermost type of
+    an ``ARRAY(Enum(...))`` is the *same object* the calling package declared.
+    Clearing its schema in place would reach out of this throwaway copy and edit
+    the package's own metadata.
+
+    Containers are unwrapped through ``item_type`` the way ``underlying_type``
+    defines it, so this and ``contract``/``render`` agree on which type a column
+    actually creates.
+    """
+    if underlying_type(type_) is type_:
+        if not isinstance(type_, SchemaType) or type_.schema != default_schema:
+            return type_
+        unqualified = type_.copy()
+        unqualified.schema = None
+        return unqualified
+    item_type = _folded_type(type_.item_type, default_schema)  # ty: ignore[unresolved-attribute]
+    if item_type is type_.item_type:  # ty: ignore[unresolved-attribute]
+        return type_
+    return type_.adapt(type(type_), item_type=item_type)
 
 
 def _context(connection: Connection, definitions: Sequence[SchemaDefinition]) -> MigrationContext:
@@ -185,9 +246,15 @@ def _requalified(
     comparison, so a ``None`` here can only be the folded default.
 
     Operations on a table outside the default schema are rewritten too, and not
-    out of tidiness: their columns still come from the folded copy, so a foreign
-    key of ``pass_builder.certificate`` into ``public.pass_state`` would render
-    as a bare ``REFERENCES pass_state``.
+    out of tidiness: their columns and types still come from the folded copy, so
+    a foreign key of ``pass_builder.certificate`` into ``public.pass_state``
+    would render as a bare ``REFERENCES pass_state``.
+
+    Anything carrying a column or a type is taken from the declared table rather
+    than patched, because the fold reaches inside those too. Both forms the
+    contract recommends for a type need it: ``schema=…`` is cleared by
+    ``comparison_metadata``, and ``inherit_schema=True`` re-inherits the folded —
+    absent — table schema when the column is copied.
     """
     for op in ops:
         schema = getattr(op, "schema", _ABSENT)
@@ -206,17 +273,35 @@ def _requalified(
                 # once the table itself carries its schema again.
                 yield CreateTableOp.from_table(table)
                 continue
-            if isinstance(op, AddColumnOp) and op.column.name in table.c:
-                op.column = table.c[op.column.name]
+            if isinstance(op, AddColumnOp):
+                # `or` is not available here: a Column overloads __bool__ to raise.
+                added = _declared_column(table, op.column.name)
+                if added is not None:
+                    op.column = added
+            if isinstance(op, AlterColumnOp) and op.modify_type is not None:
+                target = _declared_column(table, op.column_name)
+                if target is not None:
+                    op.modify_type = target.type
         # Constraint operations keep their schemas in ``op.kw`` rather than as
         # attributes, and a foreign key keeps two, so both places are swept.
+        keywords = getattr(op, "kw", None)
         for field in _SCHEMA_FIELDS:
             if getattr(op, field, _ABSENT) is None:
                 setattr(op, field, default_schema)
-            keywords = getattr(op, "kw", None)
             if isinstance(keywords, dict) and keywords.get(field, _ABSENT) is None:
                 keywords[field] = default_schema
         yield op
+
+
+def _declared_column(table: Table, name: str) -> Column | None:
+    """Return the table's column of that name, or None.
+
+    Looks the column up by ``.name``, not through ``table.c[...]``:
+    ``ColumnCollection`` is keyed by ``.key``, which a package is free to set to
+    something else (``Column("kind", key="kind_")``). Indexing would then miss
+    silently and leave the folded column in place.
+    """
+    return next((column for column in table.columns if column.name == name), None)
 
 
 def render_diff(
@@ -272,4 +357,25 @@ def render_diff(
             body.append(commented)
         else:
             body.append(statement)
-    return document(header, body, ddl_role)
+    return document(header, [*_missing_schemas(connection, definitions), *body], ddl_role)
+
+
+def _missing_schemas(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
+    """Return the ``CREATE SCHEMA`` statements this diff owes its own body.
+
+    A diff is applied, so it is responsible for the schemas its statements need,
+    exactly as ``render_create`` is: without this the first table of a
+    not-yet-existing schema fails with ``InvalidSchemaName``. Reuses
+    ``render``'s notion of which schemas a selection needs so the two documents
+    cannot come to different conclusions.
+
+    Restricted to the schemas the database does not have yet, which
+    ``render_create`` cannot do because it never sees a connection. A diff is
+    generated against the very database it is applied to, and ``CREATE SCHEMA``
+    needs CREATE on the *database* even in its ``IF NOT EXISTS`` form -- a right
+    the DDL role has no reason to hold for a schema that already exists (the
+    same reasoning that keeps ``public`` out of ``render._ALWAYS_PRESENT``).
+    """
+    present = set(inspect(connection).get_schema_names())
+    needed = needed_schemas(definitions) | type_schemas(definitions)
+    return schema_statements(needed - present)
