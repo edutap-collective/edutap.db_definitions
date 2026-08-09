@@ -68,6 +68,9 @@ It defines one table, `widget`, using the canonical naming convention.
 Copy the convention's dict literal into the package instead of importing it
 — {doc}`how-to` explains why: importing it would give a deployed package a
 runtime dependency on a tool that is never deployed.
+The table also names its schema, `public`, explicitly on the `Table` call
+below: `edutap-dbdef` rejects a table that leaves this to PostgreSQL's
+`search_path` — {doc}`explanation` says why that matters even for `public`.
 
 ```python
 """Announces the widget table to edutap.db_definitions."""
@@ -90,6 +93,7 @@ Table(
     metadata,
     Column("id", Integer, primary_key=True),
     Column("name", String(64), nullable=False),
+    schema="public",
 )
 
 definition = SchemaDefinition(name="dbdef_tutorial_example", metadata=metadata)
@@ -119,14 +123,18 @@ It contains one transaction with one `CREATE TABLE`.
 -- edutap-dbdef create
 -- packages: dbdef_tutorial_example (0.1.0)
 BEGIN;
+-- NOTE: generated without --ddl-role; objects will be owned by whichever user applies this file.
 -- ===== dbdef_tutorial_example =====
-CREATE TABLE IF NOT EXISTS widget (
+CREATE TABLE IF NOT EXISTS public.widget (
 	id SERIAL NOT NULL,
 	name VARCHAR(64) NOT NULL,
 	CONSTRAINT pk_widget PRIMARY KEY (id)
 );
 COMMIT;
 ```
+
+No `-- ===== schemas =====` section here: `public` always exists, so
+`edutap-dbdef` never emits a `CREATE SCHEMA` for it — see {doc}`reference`.
 
 Notice the header: it records which packages went into the file and at which
 version, instead of a timestamp, so that running `create` again produces a

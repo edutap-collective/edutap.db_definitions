@@ -132,6 +132,11 @@ def _folded_type(type_: TypeEngine, default_schema: str | None) -> TypeEngine:
     if underlying_type(type_) is type_:
         if not isinstance(type_, SchemaType) or type_.schema != default_schema:
             return type_
+        # SQLAlchemy 2.0.51's DOMAIN.copy() silently drops default, not_null, check
+        # and collation (measured). Harmless for this fold: the comparison only
+        # needs the type's name and schema, and rendering always goes through the
+        # declared type, never this copy — but a shallow spot to remember if this
+        # helper is ever reused for something that renders from the fold itself.
         unqualified = type_.copy()
         unqualified.schema = None
         return unqualified

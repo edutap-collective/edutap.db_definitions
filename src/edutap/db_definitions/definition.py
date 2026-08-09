@@ -1,4 +1,4 @@
-"""The contract a package uses to announce its tables."""
+"""The contract a package uses to announce its tables, and its shared type-introspection helper."""
 
 from dataclasses import dataclass, field
 

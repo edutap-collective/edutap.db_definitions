@@ -42,6 +42,39 @@ This is the only change needed in an existing package: a SQLModel subclass
 that carries its own `metadata` attribute registers its tables exclusively on
 that metadata, and the global `SQLModel.metadata` stays untouched.
 
+Give every table its schema.
+This is not optional: `edutap-dbdef` refuses a definition that leaves it to
+`search_path` to decide — see {doc}`explanation` for why.
+On a SQLModel class, set `__table_args__`; on a raw SQLAlchemy `Table`, pass
+`schema=`.
+
+```python
+class Certificate(Base, table=True):
+    __table_args__ = {"schema": "edutap_pass_builder"}
+
+    id: int = Field(primary_key=True)
+```
+
+Give an enum or domain column its schema the same way, since SQLAlchemy scopes
+a type to the *metadata* rather than to the table that uses it: pass
+`inherit_schema=True` so the type takes the schema of the table it is used
+on — the common case — or `schema="<name>"` to pin one explicitly.
+
+```python
+Column("kind", Enum("a", "b", name="kind", inherit_schema=True))
+```
+
+Skipping this is a contract violation, not a silent default: `check_contract`
+reports it as `unqualified_type`, and `create`, `diff`, and `check` refuse to
+run rather than create the type wherever `search_path` happens to resolve —
+typically `public`, a namespace every package then shares.
+Only a native enum or a `DOMAIN` needs this; `Enum(..., native_enum=False)`
+renders as a plain `VARCHAR` and creates no type at all, so it is not
+checked.
+The check walks columns, so a type that is attached only to the `MetaData`
+(`Enum(..., metadata=metadata)`) and never assigned to a column is invisible
+to it — give every type you declare a column to live on.
+
 Describe the package with a `SchemaDefinition` and announce it through an
 entry point in the package's own `pyproject.toml`.
 
@@ -68,9 +101,19 @@ metadata in that order.
 A foreign key into another package's table without the matching `requires`
 entry is a contract violation: `create`, `diff`, and `check` refuse to run and
 name both packages.
+Write the target schema-qualified too, `ForeignKey("public.pass_state.id")`
+rather than `ForeignKey("pass_state.id")`: an unqualified target string
+escapes this check entirely — nothing about it names a package for the check
+to compare against `requires` — so nothing stops the run here. It still
+fails, just later and from SQLAlchemy itself (`NoReferencedTableError`),
+with a message that never mentions `requires`.
 Give every package its own `version_table` name if it uses Alembic: a shared
 database with one `alembic_version` table for every package would let the
 packages overwrite each other's migration history.
+Add `version_table_schema` too once the package holds tables in more than one
+schema — `validate()` cannot otherwise tell which of them holds the history
+table. With exactly one schema, it is derived automatically and can be left
+unset.
 
 If `edutap-dbdef check` reports a `naming_convention` violation for your
 package, compare your copy against the block above — a copy-paste drift is

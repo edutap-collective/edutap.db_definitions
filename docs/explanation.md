@@ -62,6 +62,21 @@ tool that itself is never deployed, purely to reach a `dict` literal.
 `check` verifies the copies still agree, which is a small price for keeping
 the dependency graph pointing the right way.
 
+## Why the schema is mandatory
+
+An unqualified table name is not resolved by this tool, it is resolved by
+PostgreSQL's `search_path` at whatever moment the table gets created.
+With the common `search_path = "$user", public`, that means the very same
+`CREATE TABLE thing` lands in a schema named after the connecting role
+wherever one exists, and falls through to `public` wherever it does not —
+which is exactly how the same code has ended up with its tables in `edutap`
+locally and in `public` in production, unnoticed, because nothing in either
+run was wrong on its own terms.
+Declaring `schema=` on every table is what makes the two runs identical
+instead of merely usually identical, so `SchemaDefinition.validate()` refuses
+to guess on a package's behalf — see {doc}`reference` for the exact rule and
+the message a package author sees.
+
 ## Why the diff is generated, not hand-written
 
 `diff` and `check` do not implement their own comparison logic.
@@ -79,6 +94,47 @@ purpose.
 
 This has a consequence worth naming: `edutap.db_definitions` inherits
 Alembic's blind spots along with its correctness.
+
+## Why the comparison folds the default schema away
+
+PostgreSQL's own reflection omits the schema of anything that lives in the
+connection's default schema: a foreign key into `public.pass_state` comes
+back from the database as `referred_schema: None`, not `'public'`.
+A package's declaration, by the rule above, always says `'public'`
+explicitly.
+Compared literally against what reflection reports, the two would differ on
+every single run, and `check`/`diff` would report a `remove_fk` followed by
+an `add_fk` for a foreign key that never actually changed — a comparison that
+can never go green is worse than no comparison at all.
+
+The comparison therefore runs against a throwaway copy of the declared
+metadata, built once per comparison, with the connection's default schema
+folded away to match the shape reflection produces: the table itself, a
+foreign key's target, and a column's type all fold the same way, because all
+three carry a schema reflection can drop.
+Folding is not the same as dropping the declaration.
+The package keeps declaring its schema explicitly — that is what makes the
+tool's claim and the database agree in the first place — and every other
+consumer of the metadata (`create`, the contract checks, `foreign_tables`)
+keeps using the name the package actually wrote.
+Only this one throwaway copy is massaged, and only because reflection leaves
+no other way to compare like with like.
+Anything derived from the fold that is actually written to a file — `diff`'s
+SQL — is requalified again before rendering: the mandatory-schema rule above
+applies to generated DDL just as much as to a package's own declaration, so
+the fold cannot be allowed to leak into it.
+
+A later reader who was not there for this reasoning has one place it becomes
+visible: the diagnostic lines `check` prints for a change it found are
+Alembic's own `repr()` of an operation against the *folded* copy, not against
+what a package wrote.
+A default-schema table therefore appears in that list as `thing`, not
+`public.thing` — for example `('add_column', None, 'thing', <Column ...>)` —
+and the `None` there is the folded default schema, not a place the tool
+forgot to qualify.
+It is worth knowing before it is mistaken for one: nothing about that line
+was left unfinished, it is exactly the copy built to compare cleanly,
+reported by a library that never saw the declared name at all.
 
 ## The known limits of autogenerate
 

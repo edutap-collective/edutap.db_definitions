@@ -30,11 +30,23 @@ The document is rendered by SQLAlchemy's own schema emitter, so it contains
 every object the tables need, not only the tables themselves: enum types,
 explicit sequences, indexes, and the `ALTER TABLE ... ADD CONSTRAINT` of a
 deferred foreign key.
-Types are emitted once, in a leading `-- ===== types =====` section, before the
-per-package `-- ===== <package> =====` sections: a type belongs to the schema
+A leading `-- ===== schemas =====` section emits one
+`CREATE SCHEMA IF NOT EXISTS` per schema the document needs — every schema a
+data table, the version table, or a qualified type lives in.
+`public` is never among them: every PostgreSQL database already has it, and
+creating it needs `CREATE` on the *database*, a right a plain DDL role has no
+reason to hold — emitting it unconditionally would make the document fail
+for the very role it is meant to be applied by.
+Types are emitted next, in a `-- ===== types =====` section, before the
+per-package `-- ===== <package> =====` sections: a type belongs to a schema
 rather than to one package.
-With `--split`, every file repeats the type creation so that each file can be
-applied on its own.
+With `--split`, every file repeats the type creation of every selected
+package, not only its own, so that it can be applied on its own without
+another file's tables around to supply the types they need.
+It therefore also repeats the schema creation of every type in the whole
+document: a file may need to create a schema it holds no table of its own
+in, purely to house another package's type. `CREATE SCHEMA IF NOT EXISTS`
+makes that harmless.
 It is repeatable: `CREATE TABLE`, `CREATE INDEX`, and `CREATE SEQUENCE` carry
 `IF NOT EXISTS`, and the statements PostgreSQL has no `IF NOT EXISTS` form
 for — `CREATE TYPE` and `ALTER TABLE ... ADD CONSTRAINT` — are wrapped in a
@@ -78,9 +90,18 @@ The role only needs read access.
 Like `create` and `check`, `diff` validates the package contract across the
 selected definitions before comparing — see the `ContractError` case under
 `check` and {ref}`exceptions`.
-Tables present in the database that belong to no selected package are
-reported on standard error and otherwise ignored — a shared database
-legitimately holds tables of packages this site did not select.
+The comparison spans every schema the selected packages own, not only the
+connection's default schema, and the rendered document opens with a
+`CREATE SCHEMA IF NOT EXISTS` for any of them the database does not have yet
+— restricted to what is actually missing, unlike `create`'s preamble, because
+`CREATE SCHEMA` needs `CREATE` on the *database* even in its
+`IF NOT EXISTS` form, and a diff has to remain applicable by a role that only
+holds `CREATE` on its own schemas.
+Tables in the selected packages' schemas that belong to none of them are
+reported, schema-qualified, on standard error as
+`Ignored tables of other owners` and otherwise left alone — a shared database
+legitimately holds tables of packages this site did not select, even inside
+a schema this site owns.
 Known limits, restated in the document itself: renames are not detected
 (they appear as a drop and an add), some type changes render incompletely,
 and data migrations are out of scope.
@@ -105,13 +126,30 @@ Prints `Schema is in sync with the definitions.` and exits `0` when there is
 nothing to do.
 Otherwise prints `Schema deviates from the definitions:` followed by one
 line per deviation on standard error, and exits `1`.
+The comparison spans every schema the selected packages own, not only the
+connection's default schema, and reports a schema the selection needs that
+the database lacks entirely — not only a table missing inside a schema that
+does exist — as its own deviation, first in the list:
+
+```text
+missing_schema: 'history' is needed by the selected packages but does not
+exist in the database
+```
+
+That line is the one written as a sentence; the rest of the list is
+Alembic's own `repr()` of the operation it derived, for example
+`('add_column', None, 'thing', <Column ...>)`.
+The `None` there is Alembic's tuple form for "the connection's default
+schema", not a comparison this tool lost track of — see {doc}`explanation`
+for why the comparison folds the default schema away before comparing.
 Before comparing, `check` also validates the package contract across the
 selected definitions and exits `1` with a `ContractError` message — see
 {ref}`exceptions` — if any package uses a different naming
 convention, two packages claim the same `version_table`, two packages
-define a table of the same name, or a package's foreign key references
+define a table of the same name, a package's foreign key references
 another selected package's table without declaring that package in
-`requires`.
+`requires`, or an enum or domain column would be created outside its
+table's schema.
 
 ### `apply`
 
@@ -204,18 +242,47 @@ callable that returns one.
 | `metadata` | `sqlalchemy.MetaData` | yes | the package's own metadata; must not be `SQLModel.metadata` or another package's metadata |
 | `requires` | `tuple[str, ...]` | no, default `()` | names of packages this one's tables depend on; orders the packages and makes their metadata resolvable as one, which is what lets a foreign key cross a package boundary. Required whenever such a foreign key exists — a missing entry is a contract violation |
 | `alembic_ini` | `str \| None` | no, default `None` | path to the package's `alembic.ini`; carried and validated, unused until Alembic offline mode |
-| `version_table` | `str \| None` | no, default `None` | the package's own `alembic_version`-style table name; must be unique across the selected packages and must not also be a data table |
+| `version_table` | `str \| None` | no, default `None` | the package's own `alembic_version`-style table name; must be unique across the selected packages (by its qualified name, see `version_table_key`) and must not also be a data table |
+| `version_table_schema` | `str \| None` | no, default `None`; required when `version_table` is set and the package holds tables in more than one schema | which of the package's schemas holds the history table; derived automatically when the package holds tables in exactly one schema |
 
 `SchemaDefinition` also provides:
 
 `table_names`
-: property; the package's table names from `metadata.tables`, sorted.
+: property; the package's schema-qualified table names from
+  `metadata.tables` (e.g. `"public.thing"`), sorted.
+
+`schemas`
+: property; the sorted, deduplicated schemas the package's tables declare.
+  Only meaningful once `validate()` has passed — before that, an undeclared
+  table's schema is `None` and is filtered out of this property rather than
+  raising.
+
+`version_table_key`
+: property; the schema-qualified name of the history table
+  (`"<schema>.<version_table>"`), or `None` if `version_table` is unset.
+  The schema is `version_table_schema` where given, or the package's single
+  schema where `schemas` holds exactly one entry — `validate()` is what
+  guarantees the ambiguous case never reaches this property.
 
 `validate()`
 : method; raises `DefinitionError` if `name` is empty, if `metadata` has no
-  tables, or if `version_table` names a table that also exists as a data
-  table in `metadata`.
+  tables, if any table declares no schema, if `version_table` is set and the
+  package's tables span more than one schema without a `version_table_schema`
+  to say which one holds it, or if `version_table_key` names a table that
+  also exists as a data table in `metadata`.
   Called automatically by discovery before a definition is used.
+
+Every table must declare its schema — `__table_args__ = {"schema": "<name>"}`
+on a SQLModel class, or `schema="<name>"` on a raw `Table` — or `validate()`
+rejects the definition with the message a package author actually sees:
+
+```text
+<package>: these tables declare no schema: <table>. Add __table_args__ =
+{"schema": "<name>"} (or schema="<name>" on the Table) — the schema decides
+who may write the table, so it cannot be left to search_path.
+```
+
+See {doc}`explanation` for why an unqualified table is not merely untidy.
 
 `edutap.db_definitions.NAMING_CONVENTION` is the canonical constraint naming
 convention every package's `MetaData` must copy — see {doc}`how-to`.
@@ -263,8 +330,10 @@ convention every package's `MetaData` must copy — see {doc}`how-to`.
   `raise_on_violations()` after `check_contract()` found one or more
   violations — a table name owned by more than one package, a
   `version_table` claimed by more than one package, a naming convention
-  that differs from `NAMING_CONVENTION`, or a foreign key into another
-  selected package that `requires` does not declare.
+  that differs from `NAMING_CONVENTION`, a foreign key into another
+  selected package that `requires` does not declare, or an enum or domain
+  column (`unqualified_type`) that would be created outside its table's
+  schema.
   `create`, `diff`, and `check` load and validate the contract before doing
   their own work; `apply` does not load package definitions at all, since it
   only executes a file it is handed.
