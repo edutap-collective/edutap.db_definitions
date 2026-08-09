@@ -199,6 +199,11 @@ Omitting the flag is never silent: the header carries
 
 and the same note goes to standard error when the document is generated.
 
+`--ddl-role` decides only who owns the objects this tool creates; the roles,
+grants, and each package's Alembic `env.py` that go with a schema-per-service
+split are somebody else's job — see the {ref}`note in the how-to guide
+<ddl-role-scope>`.
+
 (connection-settings)=
 
 ## Connection settings
@@ -302,7 +307,14 @@ does not then report a deviation — it aborts with `UndefinedTable`, against
 the very database `create` produced.
 Note that `diff` creates the *schema* a new sequence needs but not the
 sequence itself; Alembic's autogenerate does not compare sequences, so a
-brand-new sequence reaches the database through `create`.
+brand-new sequence reaches the database through `create` — for a new table.
+Measured, the same gap reaches an *existing* table gaining a column that
+defaults to a new sequence: `diff` renders the `ALTER TABLE ... ADD COLUMN`
+and the `CREATE SCHEMA` the sequence's schema needs, but no
+`CREATE SEQUENCE`, and applying it fails the same way. `create` cannot help
+there — it renders `CREATE TABLE IF NOT EXISTS`, a no-op against a table
+that already exists — so the sequence has to be created by hand ahead of
+the diff.
 
 `edutap.db_definitions.NAMING_CONVENTION` is the canonical constraint naming
 convention every package's `MetaData` must copy — see {doc}`how-to`.

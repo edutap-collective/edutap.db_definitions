@@ -115,6 +115,35 @@ schema, and `check` afterwards does not report a deviation, it aborts with
 This concerns only sequences you write out; the implicit one behind an
 autoincrementing integer primary key belongs to its table and needs nothing.
 
+````{warning}
+A schema on the `Sequence` is not enough by itself if that schema is the
+connecting role's *default* one and the table is not in it.
+Measured: `Sequence("counter", schema="public")` on a table in
+`pass_builder`, applied by a role whose default schema is `public`, passes
+`validate()`, passes the contract check, and applies cleanly — then `check`
+and `diff` **abort**, for good, with `UndefinedTable: relation
+"pass_builder.counter" does not exist`.
+
+The mechanism: PostgreSQL stores the column default unqualified,
+`nextval('counter')`, because the default schema is on `search_path` at the
+moment the table is created. SQLAlchemy's PostgreSQL reflection then
+re-qualifies that bare name with the *table's* schema before looking it
+up — `"pass_builder".counter` — and finds nothing there, because the
+sequence actually lives in `public`.
+
+This is worse than a reported deviation: `check` produces no verdict at
+all, so a deployment gated on it is stuck, not informed. And it depends on
+the DDL role's `search_path`, not on the definition — the same `schema.sql`
+is green where the connecting role's default schema is `pass_builder` and
+permanently red where it is `public`.
+
+Every other placement is clean: a sequence in a third schema, a sequence in
+the table's own schema, and a sequence in `public` when the connection's
+default schema is something else all compare and apply without incident.
+Keep a sequence in the schema of the table that uses it, or in a schema that
+is not the connection's default.
+````
+
 Describe the package with a `SchemaDefinition` and announce it through an
 entry point in the package's own `pyproject.toml`.
 
@@ -193,6 +222,8 @@ A file generated without the flag says so in its header — if you find a
 `-- NOTE: generated without --ddl-role; ...` line in a `schema.sql` destined
 for this deployment, regenerate it with the flag.
 ```
+
+(ddl-role-scope)=
 
 ```{note}
 `--ddl-role` is the whole of this tool's part in the privilege model.

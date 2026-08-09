@@ -30,6 +30,10 @@ packages also write to.
 Nothing in their code needs to know how to create a table, so nothing in
 their code is given the ability to.
 
+That leaves the read-only role itself, and the grants that back it, for
+someone to create — see the {ref}`note in the how-to guide <ddl-role-scope>`
+for where that work lives and why it stays out of this tool.
+
 ## Why a per-package `MetaData`
 
 SQLModel gives every model a home on `SQLModel.metadata` by default, a
@@ -198,12 +202,28 @@ clause encodes exactly the kind of intent a static comparison cannot see.
 
 Sequences are a blind spot of a different kind: `compare_metadata` compares
 tables, not sequences, so an explicit `Sequence` that does not exist in the
-database yet produces no `CREATE SEQUENCE` in a `diff`.
+database yet produces no `CREATE SEQUENCE` in a `diff` — whether the column
+that defaults to it belongs to a brand-new table or to one already in the
+database.
+Measured on an *existing* table gaining a column: `diff` renders
+`CREATE SCHEMA IF NOT EXISTS seqlib2;` and
+`ALTER TABLE ... ADD COLUMN n INTEGER DEFAULT nextval('seqlib2.counter2')`,
+with no `CREATE SEQUENCE` anywhere in the document, and applying it fails the
+same `UndefinedTable` way as the new-table case.
 The `CREATE SCHEMA` its schema needs *is* emitted — that part `check` and
 `diff` do know about — but the sequence itself arrives through `create`.
-A diff that adds a table whose column defaults to a not-yet-existing sequence
-therefore fails on apply, and correctly so: the baseline document is the
-right instrument for a new object.
+
+For a genuinely new table, that is the whole fix: the baseline document is
+the right instrument for a new object, so run `create` and the sequence is
+in it.
+For a new column on an existing table, `create` is not an option — it
+renders `CREATE TABLE IF NOT EXISTS`, a no-op against a table the database
+already has, so the new column never reaches it either — and `diff` is the
+only route left, with the sequence missing from what it produces.
+The operator has to hand-write the `CREATE SEQUENCE` statement, using the
+schema and name the diff's own `nextval(...)` call already names, and apply
+it — ahead of the diff, or folded into the same reviewed file — before the
+`ALTER TABLE ... ADD COLUMN` that depends on it.
 
 Data migrations sit outside this entirely.
 A comparison between two schemas has nothing to say about the values that

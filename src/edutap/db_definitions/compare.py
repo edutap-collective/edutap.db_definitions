@@ -84,11 +84,20 @@ def comparison_metadata(
     Three things carry a schema and all three have to be folded: the table, the
     foreign key's target, and the column's *type*. They cannot be folded
     separately: measured, folding the table while leaving its foreign key
-    qualified makes the key unresolvable inside the folded ``MetaData`` and
-    ``sorted_tables`` raises ``NoReferencedTableError``. Types follow for the
-    same reason of consistency — with ``compare_type=True`` a type declared
-    ``schema="public"`` (the form ``contract._unqualified_types`` recommends)
-    would otherwise be reported as ``modify_type`` on every run.
+    qualified raises ``NoReferencedTableError`` whenever the *referenced* table
+    itself sits in the default schema — that is exactly the key the fold
+    clears, while SQLAlchemy's own fallback (what ``Table.to_metadata`` does
+    with no ``referred_schema_fn``) still points the constraint at the
+    fully-qualified original name, and the two no longer meet. Where the
+    referenced table lives elsewhere, that same fallback's fully-qualified name
+    still matches the fold's untouched key, so the comparison proceeds — not
+    because leaving the foreign key unfolded is sound, only because that
+    particular key was never the one at risk; the *table's* own key still needs
+    the fold, and a package's foreign keys are not written with this fallback
+    in mind. Types follow for the same reason of consistency — with
+    ``compare_type=True`` a type declared ``schema="public"`` (the form
+    ``contract._unqualified_types`` recommends) would otherwise be reported as
+    ``modify_type`` on every run.
 
     The default schema is read from the connection rather than assumed to be
     ``public``: with ``search_path = pass_builder, public`` it is
