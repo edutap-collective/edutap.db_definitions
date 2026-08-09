@@ -18,6 +18,11 @@
   selected packages' schemas.
 - New contract violation `unqualified_type` for an enum or domain that would
   be created outside its table's schema.
+- `validate()` now also requires an explicit `Sequence` to declare its
+  schema, and `create`/`check`/`diff` create the schema a qualified sequence
+  needs. An unqualified sequence previously applied into `public` while its
+  table sat elsewhere, after which `check` aborted with `UndefinedTable`
+  rather than reporting a deviation.
 - New optional `SchemaDefinition.version_table_schema` field, required only
   when a package holds tables in more than one schema and sets
   `version_table`.

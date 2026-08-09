@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from sqlalchemy import MetaData
+from sqlalchemy.schema import Sequence
 from sqlalchemy.types import TypeEngine
 
 NAMING_CONVENTION: dict[str, str] = {
@@ -66,6 +67,7 @@ class SchemaDefinition:
         if not self.metadata.tables:
             raise DefinitionError(f"{self.name}: metadata has no tables.")
         self._require_declared_schemas()
+        self._require_declared_sequence_schemas()
         self._require_a_version_table_schema()
         if self.version_table_key and self.version_table_key in self.metadata.tables:
             raise DefinitionError(
@@ -94,6 +96,40 @@ class SchemaDefinition:
                 "left to search_path."
             )
 
+    def _require_declared_sequence_schemas(self) -> None:
+        """Reject an explicit sequence that leaves its schema to ``search_path``.
+
+        A sequence is a relation, in the same namespace as a table, and it goes
+        wrong the same way — only more quietly. Measured, ``Sequence("counter")``
+        on a table in ``pass_builder`` renders as a bare
+        ``CREATE SEQUENCE IF NOT EXISTS counter``, which lands in ``public``,
+        while the table that owns it sits in ``pass_builder``.
+
+        That is worse than the table case, because it is not a deviation
+        ``check`` can report. For a table outside the default schema,
+        SQLAlchemy's reflection rewrites the column default
+        ``nextval('counter'::regclass)`` to ``nextval('"pass_builder".counter')``
+        and Alembic casts it back to ``regclass``, so ``check`` does not report
+        a difference — it aborts with ``UndefinedTable: relation
+        "pass_builder.counter" does not exist``, for ever, against the very
+        database ``create`` produced. A document that cannot be checked
+        afterwards is refused before it is written.
+
+        Covers the sequences attached to the MetaData as well as those attached
+        to a column: the rule is about what the package declared, not about
+        which of them today's renderer happens to reach.
+        """
+        undeclared = sorted(
+            sequence.name for sequence in metadata_sequences(self.metadata) if not sequence.schema
+        )
+        if undeclared:
+            raise DefinitionError(
+                f"{self.name}: these sequences declare no schema: {', '.join(undeclared)}. "
+                'Add schema="<name>" to the Sequence(...) — an unqualified CREATE SEQUENCE '
+                "lands wherever search_path resolves, which is not necessarily the schema "
+                "of the table that uses it."
+            )
+
     def _require_a_version_table_schema(self) -> None:
         """Demand an explicit schema only where it cannot be derived."""
         if not self.version_table or self.version_table_schema:
@@ -104,6 +140,28 @@ class SchemaDefinition:
                 f"({', '.join(self.schemas)}), so version_table_schema must say which "
                 f"one holds {self.version_table!r}."
             )
+
+
+def metadata_sequences(metadata: MetaData) -> tuple[Sequence, ...]:
+    """Return every explicit ``Sequence`` in this MetaData, ordered by qualified key.
+
+    Reads ``MetaData._sequences``, for which SQLAlchemy offers no public
+    accessor. It is the same collection SQLAlchemy's own ``create_all`` renders
+    sequences from, so reading it is what keeps this tool's idea of "the
+    sequences a document declares" identical to the one that produces the
+    document. Measured, it holds both the sequences attached to a column and
+    those attached to the MetaData alone.
+
+    Implicit sequences are not in it, which is correct: the one an
+    autoincrementing ``Integer`` primary key gets is created by, and dropped
+    with, its table, and never carries a schema of its own.
+
+    Shared between ``definition`` (which sequences declare no schema) and
+    ``render`` (which schemas a qualified sequence needs) so the two cannot
+    drift apart on what "the sequences of a package" means.
+    """
+    sequences = metadata._sequences
+    return tuple(sequences[key] for key in sorted(sequences))
 
 
 def underlying_type(type_: TypeEngine) -> TypeEngine:

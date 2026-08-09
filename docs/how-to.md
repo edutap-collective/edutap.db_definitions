@@ -75,6 +75,22 @@ The check walks columns, so a type that is attached only to the `MetaData`
 (`Enum(..., metadata=metadata)`) and never assigned to a column is invisible
 to it — give every type you declare a column to live on.
 
+Give an explicit `Sequence` its schema too.
+
+```python
+counter = Sequence("certificate_id_seq", schema="edutap_pass_builder")
+```
+
+A sequence is a relation, in the same namespace as a table, so a bare
+`CREATE SEQUENCE` lands wherever `search_path` resolves — not necessarily
+where the table whose column defaults to it lives.
+`validate()` rejects it, and unlike the table case there would be no second
+chance to notice: an unqualified sequence *applies* cleanly into the wrong
+schema, and `check` afterwards does not report a deviation, it aborts with
+`UndefinedTable`.
+This concerns only sequences you write out; the implicit one behind an
+autoincrementing integer primary key belongs to its table and needs nothing.
+
 Describe the package with a `SchemaDefinition` and announce it through an
 entry point in the package's own `pyproject.toml`.
 

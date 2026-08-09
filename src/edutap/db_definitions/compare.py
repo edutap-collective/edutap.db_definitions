@@ -26,6 +26,7 @@ from .render import (
     needed_schemas,
     package_provenance,
     schema_statements,
+    sequence_schemas,
     type_schemas,
 )
 
@@ -232,11 +233,15 @@ def _context(connection: Connection, definitions: Sequence[SchemaDefinition]) ->
 def missing_schemas(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:
     """Return the schemas the selection needs that the database does not have.
 
-    Includes the schemas of qualified types, which need creating just as a table
-    schema does, and a ``version_table_schema`` holding no data table at all.
+    Includes the schemas of qualified types and of explicit sequences, which
+    need creating just as a table schema does, and a ``version_table_schema``
+    holding no data table at all.
     """
     present = set(inspect(connection).get_schema_names())
-    return sorted((needed_schemas(definitions) | type_schemas(definitions)) - present)
+    required = (
+        needed_schemas(definitions) | type_schemas(definitions) | sequence_schemas(definitions)
+    )
+    return sorted(required - present)
 
 
 def describe_changes(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:

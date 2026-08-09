@@ -196,6 +196,15 @@ type pair, and where a `USING` clause is needed to tell PostgreSQL how to
 reinterpret existing values, nothing in a metadata diff can invent one — that
 clause encodes exactly the kind of intent a static comparison cannot see.
 
+Sequences are a blind spot of a different kind: `compare_metadata` compares
+tables, not sequences, so an explicit `Sequence` that does not exist in the
+database yet produces no `CREATE SEQUENCE` in a `diff`.
+The `CREATE SCHEMA` its schema needs *is* emitted — that part `check` and
+`diff` do know about — but the sequence itself arrives through `create`.
+A diff that adds a table whose column defaults to a not-yet-existing sequence
+therefore fails on apply, and correctly so: the baseline document is the
+right instrument for a new object.
+
 Data migrations sit outside this entirely.
 A comparison between two schemas has nothing to say about the values that
 should occupy a new column, or about reshaping data that a structural change

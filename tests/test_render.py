@@ -151,8 +151,37 @@ def test_a_type_is_created_once_and_before_every_package_section():
 
 def test_an_explicit_sequence_is_created_and_the_column_keeps_its_default():
     sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
-    assert "CREATE SEQUENCE IF NOT EXISTS provider_thing_id_seq;" in sql
-    assert "nextval('provider_thing_id_seq'" in sql
+    assert "CREATE SEQUENCE IF NOT EXISTS public.provider_thing_id_seq;" in sql
+    assert "nextval('public.provider_thing_id_seq'" in sql
+
+
+def test_an_explicit_sequence_is_qualified_like_the_table_that_uses_it():
+    """A sequence is a relation, so it declares its schema the way a table does.
+
+    Nothing folds it back to the default: a bare ``CREATE SEQUENCE counter``
+    lands wherever the applying role's `search_path` resolves, which is not
+    necessarily the schema of the table whose column defaults to it.
+    """
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum", schema="alpha")])
+    assert "CREATE SEQUENCE IF NOT EXISTS alpha.provider_thing_id_seq;" in sql
+    assert "nextval('alpha.provider_thing_id_seq'" in sql
+
+
+def test_the_schema_of_a_sequence_of_its_own_is_created():
+    """A sequence may name a schema no table of the package lives in.
+
+    Without this, `create` emitted the ``CREATE SEQUENCE seqlib.…`` with no
+    ``CREATE SCHEMA seqlib`` above it, and the document failed to apply with
+    ``InvalidSchemaName`` — while `check` never reported the schema as missing,
+    so `diff` never created it either.
+    """
+    definition = make_definition_with_enum_and_sequence(
+        "pkg.enum", schema="alpha", sequence_schema="seqlib"
+    )
+    sql = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS seqlib;" in sql
+    assert sql.index("CREATE SCHEMA IF NOT EXISTS seqlib;") < sql.index("CREATE SEQUENCE")
 
 
 def test_a_deferred_foreign_key_is_rendered_as_an_alter_table():

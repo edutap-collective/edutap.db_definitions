@@ -21,7 +21,12 @@ from sqlalchemy import (
 )
 
 from edutap.db_definitions import cli
-from edutap.db_definitions.compare import describe_changes, foreign_tables, render_diff
+from edutap.db_definitions.compare import (
+    describe_changes,
+    foreign_tables,
+    missing_schemas,
+    render_diff,
+)
 from edutap.db_definitions.definition import (
     NAMING_CONVENTION,
     SchemaDefinition,
@@ -29,7 +34,11 @@ from edutap.db_definitions.definition import (
 )
 from edutap.db_definitions.execute import apply_sql
 from edutap.db_definitions.render import render_create
-from tests.conftest import make_definition, make_definition_with_qualified_enum
+from tests.conftest import (
+    make_definition,
+    make_definition_with_enum_and_sequence,
+    make_definition_with_qualified_enum,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -383,6 +392,61 @@ def test_a_diff_that_needs_a_new_schema_creates_it(engine_with_schemas):
     apply_sql(sql, dsn(engine_with_schemas))
     with engine_with_schemas.connect() as connection:
         assert describe_changes(connection, [definition]) == []
+
+
+def test_a_sequence_in_a_schema_of_its_own_applies_and_checks_clean(engine_with_schemas):
+    """The whole round trip for the fourth schema-carrying object in a MetaData.
+
+    Measured before the fix: `create` emitted ``CREATE SEQUENCE IF NOT EXISTS
+    seqlib.counter`` with no ``CREATE SCHEMA seqlib``, so `apply` failed with
+    ``InvalidSchemaName`` — and `missing_schemas` did not list `seqlib` either,
+    so neither `check` reported it nor `diff` created it.
+    """
+    definition = make_definition_with_enum_and_sequence(
+        "pkg.enum", schema="pass_builder", sequence_schema="seqlib"
+    )
+
+    apply_sql(render_create([definition]), dsn(engine_with_schemas))
+
+    with engine_with_schemas.connect() as connection:
+        assert missing_schemas(connection, [definition]) == []
+        assert describe_changes(connection, [definition]) == []
+        assert (
+            connection.execute(
+                text(
+                    "SELECT sequence_schema FROM information_schema.sequences "
+                    "WHERE sequence_name = 'provider_thing_id_seq'"
+                )
+            ).scalar()
+            == "seqlib"
+        )
+
+
+def test_a_diff_reports_and_creates_the_schema_a_sequence_needs(engine_with_schemas):
+    """`check` has to see the missing schema, or `diff` never gets asked to make it.
+
+    It pins the limit alongside it: the diff creates the *schema* but not the
+    sequence. Alembic's autogenerate compares tables, not sequences, so a
+    sequence that does not exist yet is one of its blind spots — `create` is the
+    command that emits ``CREATE SEQUENCE``, and applying this diff on its own
+    would fail on the column default that references it. Sharpen this test if
+    Alembic ever grows sequence comparison; do not silently drop the assertion.
+    """
+    definition = make_definition_with_enum_and_sequence(
+        "pkg.enum", schema="pass_builder", sequence_schema="seqlib"
+    )
+    with engine_with_schemas.begin() as connection:
+        connection.execute(text("CREATE SCHEMA pass_builder"))
+
+    with engine_with_schemas.connect() as connection:
+        assert missing_schemas(connection, [definition]) == ["seqlib"]
+        assert any(
+            "missing_schema" in change for change in describe_changes(connection, [definition])
+        )
+        sql = render_diff(connection, [definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS seqlib;" in sql
+    assert "CREATE SEQUENCE" not in sql
 
 
 def history_only_schema_definition() -> SchemaDefinition:

@@ -2,7 +2,7 @@ import dataclasses
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, Table
+from sqlalchemy import Column, Integer, MetaData, Sequence, Table
 
 from edutap.db_definitions.definition import NAMING_CONVENTION, DefinitionError, SchemaDefinition
 from tests.conftest import make_definition
@@ -63,6 +63,60 @@ def test_a_table_without_a_schema_is_rejected():
     assert "__table_args__" in message
     assert 'schema="<name>"' in message
     assert "search_path" in message
+
+
+def sequence_metadata(schema: str | None) -> MetaData:
+    """A table in `pass_builder` whose id defaults to an explicit sequence."""
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    sequence = Sequence("counter", schema=schema) if schema else Sequence("counter")
+    Table(
+        "thing",
+        metadata,
+        Column("id", Integer, sequence, server_default=sequence.next_value(), primary_key=True),
+        schema="pass_builder",
+    )
+    return metadata
+
+
+def test_a_sequence_without_a_schema_is_rejected():
+    """A sequence is a relation, and it goes wrong worse than a table does.
+
+    Measured: `create` renders a bare ``CREATE SEQUENCE counter``, which lands
+    in `public` while the table sits in `pass_builder`. `check` then does not
+    report a deviation — it aborts with ``UndefinedTable: relation
+    "pass_builder.counter" does not exist``, for ever, against exactly the
+    database `create` produced. Refusing the document is the only outcome that
+    leaves the operator somewhere to go.
+    """
+    definition = SchemaDefinition(name="pkg.a", metadata=sequence_metadata(None))
+
+    with pytest.raises(DefinitionError) as error:
+        definition.validate()
+
+    message = str(error.value)
+    assert "counter" in message
+    assert 'schema="<name>"' in message
+    assert "search_path" in message
+
+
+def test_a_sequence_attached_to_the_metadata_alone_is_checked_too():
+    """The rule is about the declaration, not about what today's renderer reaches.
+
+    Measured, `merged_metadata` drops a sequence that belongs to no column, so
+    such a sequence is never created at all. That is a separate gap; it must not
+    quietly exempt the declaration from the schema rule.
+    """
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    Table("thing", metadata, Column("id", Integer, primary_key=True), schema="pass_builder")
+    Sequence("lonely", metadata=metadata)
+    definition = SchemaDefinition(name="pkg.a", metadata=metadata)
+
+    with pytest.raises(DefinitionError, match="lonely"):
+        definition.validate()
+
+
+def test_a_qualified_sequence_is_accepted():
+    SchemaDefinition(name="pkg.a", metadata=sequence_metadata("seqlib")).validate()
 
 
 def test_the_schemas_of_a_definition_are_reported_sorted():

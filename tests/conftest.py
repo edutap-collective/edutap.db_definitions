@@ -81,15 +81,23 @@ def make_definition_with_foreign_key(name: str, schema: str = "public") -> Schem
     return SchemaDefinition(name=name, metadata=metadata)
 
 
-def make_definition_with_enum_and_sequence(name: str, schema: str = "public") -> SchemaDefinition:
+def make_definition_with_enum_and_sequence(
+    name: str, schema: str = "public", sequence_schema: str | None = None
+) -> SchemaDefinition:
     """Build a definition using schema objects that are not tables or indexes.
 
     A native PostgreSQL enum type and an explicit sequence both need their own
     ``CREATE`` statement before the table that uses them. `edutap.pass_builder`
     uses native enum types, so this is the shape of a real target package.
+
+    The sequence declares a schema because `validate()` requires one: an
+    unqualified ``CREATE SEQUENCE`` lands wherever `search_path` resolves, not
+    necessarily in the schema of the table that uses it. It defaults to the
+    table's schema, the ordinary case; `sequence_schema` puts it in a schema of
+    its own, which is the case that needs its own ``CREATE SCHEMA``.
     """
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    sequence = Sequence("provider_thing_id_seq")
+    sequence = Sequence("provider_thing_id_seq", schema=sequence_schema or schema)
     Table(
         "provider_thing",
         metadata,

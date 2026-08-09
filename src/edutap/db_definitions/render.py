@@ -10,7 +10,12 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import DOMAIN
 from sqlalchemy.schema import DDLElement
 
-from .definition import NAMING_CONVENTION, SchemaDefinition, underlying_type
+from .definition import (
+    NAMING_CONVENTION,
+    SchemaDefinition,
+    metadata_sequences,
+    underlying_type,
+)
 
 _MOCK_URL = "postgresql+psycopg://"
 
@@ -252,6 +257,37 @@ def type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
     return schemas
 
 
+def sequence_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+    """Return every schema an explicit ``Sequence`` in the rendered DDL names.
+
+    A sequence is the fourth schema-carrying object in a ``MetaData``, after the
+    table, a foreign key's target and a column's type, and it needs its schema
+    created exactly as they do: without this, ``create`` emitted
+    ``CREATE SEQUENCE IF NOT EXISTS seqlib.counter`` with no
+    ``CREATE SCHEMA seqlib`` above it and the document failed to apply with
+    ``InvalidSchemaName``.
+
+    Kept out of :func:`needed_schemas` for the same reason type schemas are: a
+    schema that houses nothing but a sequence holds none of our tables, so
+    scanning it would report somebody else's tables as foreign. The callers
+    union the sets.
+
+    Restricted to the sequences attached to a column, which are the ones that
+    reach the document. Measured, ``Table.to_metadata`` carries a column's
+    sequence into the merged metadata but has nowhere to put a sequence
+    attached to the MetaData alone, so such a sequence is never created —
+    and a ``CREATE SCHEMA`` emitted only to house it would create an empty
+    schema, at the cost of a statement that needs ``CREATE`` on the *database*
+    from a role that may hold no such right.
+    """
+    return {
+        sequence.schema
+        for definition in definitions
+        for sequence in metadata_sequences(definition.metadata)
+        if sequence.schema and sequence.column is not None
+    }
+
+
 def schema_statements(schemas: set[str]) -> list[str]:
     """Return one ``CREATE SCHEMA`` per schema, deduplicated and ordered."""
     needed = sorted(schemas - _ALWAYS_PRESENT)
@@ -334,16 +370,20 @@ def _preamble(
     Schemas come first: a qualified type cannot be created in a schema that
     does not exist yet.
 
-    A file's schema set is the set its own content needs: ``own``'s tables and
-    version table, plus the type schemas of ``all_definitions`` — not just
-    ``own``'s. The type block itself is global (:func:`_render_package` returns
-    every selected package's types for each package section, see its
+    A file's schema set is the set its own content needs: ``own``'s tables,
+    version table and sequences, plus the type schemas of ``all_definitions`` —
+    not just ``own``'s. The type block itself is global (:func:`_render_package`
+    returns every selected package's types for each package section, see its
     docstring), so a split file may need to create a schema it holds no table
     of its own in, just to house another package's type. ``IF NOT EXISTS``
     makes that harmless.
+
+    Sequences take ``own`` rather than ``all_definitions``, unlike types: a
+    sequence is emitted with the table it belongs to, so a split file carries
+    only its own.
     """
     lines: list[str] = []
-    needed = needed_schemas(own) | type_schemas(all_definitions)
+    needed = needed_schemas(own) | type_schemas(all_definitions) | sequence_schemas(own)
     schemas = schema_statements(needed)
     if schemas:
         lines.extend([_SCHEMAS_SECTION, *schemas])

@@ -32,7 +32,8 @@ explicit sequences, indexes, and the `ALTER TABLE ... ADD CONSTRAINT` of a
 deferred foreign key.
 A leading `-- ===== schemas =====` section emits one
 `CREATE SCHEMA IF NOT EXISTS` per schema the document needs — every schema a
-data table, the version table, or a qualified type lives in.
+data table, the version table, a qualified type, or an explicit sequence
+lives in.
 `public` is never among them: every PostgreSQL database already has it, and
 creating it needs `CREATE` on the *database*, a right a plain DDL role has no
 reason to hold — emitting it unconditionally would make the document fail
@@ -266,7 +267,8 @@ callable that returns one.
 
 `validate()`
 : method; raises `DefinitionError` if `name` is empty, if `metadata` has no
-  tables, if any table declares no schema, if `version_table` is set and the
+  tables, if any table declares no schema, if any explicit `Sequence`
+  declares no schema, if `version_table` is set and the
   package's tables span more than one schema without a `version_table_schema`
   to say which one holds it, or if `version_table_key` names a table that
   also exists as a data table in `metadata`.
@@ -283,6 +285,24 @@ who may write the table, so it cannot be left to search_path.
 ```
 
 See {doc}`explanation` for why an unqualified table is not merely untidy.
+
+An explicit `Sequence` must declare its schema for the same reason and is
+rejected the same way:
+
+```text
+<package>: these sequences declare no schema: <sequence>. Add
+schema="<name>" to the Sequence(...) — an unqualified CREATE SEQUENCE lands
+wherever search_path resolves, which is not necessarily the schema of the
+table that uses it.
+```
+
+A sequence is a relation, in the same namespace as a table, and it fails
+worse: an unqualified one applies cleanly into the wrong schema, and `check`
+does not then report a deviation — it aborts with `UndefinedTable`, against
+the very database `create` produced.
+Note that `diff` creates the *schema* a new sequence needs but not the
+sequence itself; Alembic's autogenerate does not compare sequences, so a
+brand-new sequence reaches the database through `create`.
 
 `edutap.db_definitions.NAMING_CONVENTION` is the canonical constraint naming
 convention every package's `MetaData` must copy — see {doc}`how-to`.
