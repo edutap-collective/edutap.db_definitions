@@ -46,7 +46,23 @@ _TYPE_PREFIXES: tuple[str, ...] = ("CREATE TYPE ", "CREATE DOMAIN ")
 """Statements creating a type, which belongs to the schema rather than a table."""
 
 _TYPES_SECTION = "-- ===== types ====="
-"""Section comment for the types, which no single package owns."""
+"""Section comment for the types, which belong to a schema rather than a table.
+
+Which schema is the package's own decision (see the ``unqualified_type``
+contract check); this section only makes sure each type is created once, before
+any table that uses it.
+"""
+
+_SCHEMAS_SECTION = "-- ===== schemas ====="
+"""Section comment for the schemas the selected packages need."""
+
+_ALWAYS_PRESENT: frozenset[str] = frozenset({"public"})
+"""Schemas never emitted, because every PostgreSQL database has them.
+
+``CREATE SCHEMA IF NOT EXISTS public`` is not merely redundant, it needs CREATE
+on the *database*, which a plain DDL role has no reason to hold. Emitting it
+would make a document fail for the one role it is meant to be applied by.
+"""
 
 _GUARDED_PREFIXES: tuple[str, ...] = (*_TYPE_PREFIXES, "ALTER TABLE ")
 """Statements with no ``IF NOT EXISTS`` form, wrapped in a DO block instead.
@@ -172,6 +188,29 @@ def _render_package(merged: MetaData, definition: SchemaDefinition) -> tuple[lis
     return types, [f"-- ===== {definition.name} =====", *rest]
 
 
+def _needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+    """Return every schema the selection needs, data tables and history alike.
+
+    A package may keep its migration history in a schema it holds no data table
+    in — ``version_table_schema`` exists precisely to allow that. Deriving the
+    list from ``SchemaDefinition.schemas`` alone would then skip it, and
+    Alembic's first ``CREATE TABLE alembic_version_…`` would fail on a schema
+    nobody created.
+    """
+    schemas = {schema for definition in definitions for schema in definition.schemas}
+    for definition in definitions:
+        key = definition.version_table_key
+        if key:
+            schemas.add(key.rsplit(".", 1)[0])
+    return schemas
+
+
+def _schema_statements(definitions: Sequence[SchemaDefinition]) -> list[str]:
+    """Return one ``CREATE SCHEMA`` per schema the selection needs, deduplicated."""
+    needed = sorted(_needed_schemas(definitions) - _ALWAYS_PRESENT)
+    return [f"CREATE SCHEMA IF NOT EXISTS {_PREPARER.quote(schema)};" for schema in needed]
+
+
 def package_provenance(definitions: Sequence[SchemaDefinition]) -> str:
     """Return the ``name (version)`` list a document's header records."""
     return ", ".join(f"{d.name} ({_package_version(d.name)})" for d in definitions)
@@ -229,13 +268,28 @@ def render_create(
     sections: list[str] = []
     for definition in definitions:
         package_types, package_body = _render_package(merged, definition)
-        # A type belongs to the schema, not to a package, and SQLAlchemy reports
+        # A type belongs to a schema, not to a package, and SQLAlchemy reports
         # all of the metadata's types for every package. One copy, before the
         # first table that could use it.
         types.extend(statement for statement in package_types if statement not in types)
         sections.extend(package_body)
-    preamble = [_TYPES_SECTION, *types] if types else []
+    preamble = _preamble(definitions, types)
     return document(_header(definitions, timestamp), [*preamble, *sections], ddl_role)
+
+
+def _preamble(definitions: Sequence[SchemaDefinition], types: Sequence[str]) -> list[str]:
+    """Return the schema and type statements that precede the first table.
+
+    Schemas come first: a qualified type cannot be created in a schema that
+    does not exist yet.
+    """
+    lines: list[str] = []
+    schemas = _schema_statements(definitions)
+    if schemas:
+        lines.extend([_SCHEMAS_SECTION, *schemas])
+    if types:
+        lines.extend([_TYPES_SECTION, *types])
+    return lines
 
 
 def render_create_split(
@@ -254,7 +308,7 @@ def render_create_split(
     documents: dict[str, str] = {}
     for definition in definitions:
         types, body = _render_package(merged, definition)
-        preamble = [_TYPES_SECTION, *types] if types else []
+        preamble = _preamble([definition], types)
         documents[definition.name] = document(
             _header([definition], timestamp), [*preamble, *body], ddl_role
         )

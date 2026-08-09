@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from edutap.db_definitions.render import RenderError, render_create, render_create_split
@@ -219,3 +221,66 @@ def test_split_returns_one_document_per_package():
     assert sorted(documents) == ["pkg.a", "pkg.b"]
     assert "table_a" in documents["pkg.a"]
     assert "table_b" not in documents["pkg.a"]
+
+
+def test_the_document_creates_the_schemas_it_needs():
+    definition = make_definition("pkg.a", "thing", schema="pass_builder")
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS pass_builder;" in document
+
+
+def test_public_is_never_created():
+    definition = make_definition("pkg.a", "thing", schema="public")
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA" not in document
+
+
+def test_a_schema_is_created_before_the_first_table_that_needs_it():
+    definition = make_definition("pkg.a", "thing", schema="pass_builder")
+
+    document = render_create([definition])
+
+    assert document.index("CREATE SCHEMA IF NOT EXISTS pass_builder;") < document.index(
+        "CREATE TABLE IF NOT EXISTS pass_builder.thing"
+    )
+
+
+def test_a_schema_is_created_once_even_when_two_packages_share_it():
+    a = make_definition("pkg.a", "one", schema="shared")
+    b = make_definition("pkg.b", "two", schema="shared")
+
+    document = render_create([a, b])
+
+    assert document.count("CREATE SCHEMA IF NOT EXISTS shared;") == 1
+
+
+def test_each_split_file_creates_its_own_schemas():
+    a = make_definition("pkg.a", "one", schema="alpha")
+    b = make_definition("pkg.b", "two", schema="beta")
+
+    documents = render_create_split([a, b])
+
+    assert "CREATE SCHEMA IF NOT EXISTS alpha;" in documents["pkg.a"]
+    assert "CREATE SCHEMA IF NOT EXISTS beta;" not in documents["pkg.a"]
+    assert "CREATE SCHEMA IF NOT EXISTS beta;" in documents["pkg.b"]
+
+
+def test_a_schema_that_only_holds_the_version_table_is_created_too():
+    """`version_table_schema` may name a schema no data table lives in.
+
+    Without this, Alembic's first `CREATE TABLE alembic_version_…` fails on a
+    schema nobody created — and it fails at the deployment's next migration,
+    not while generating the document, so nothing points back to here.
+    """
+    definition = replace(
+        make_definition("pkg.a", "thing", schema="pass_builder"),
+        version_table_schema="history",
+    )
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS history;" in document

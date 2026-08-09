@@ -66,3 +66,23 @@ def test_without_ddl_role_the_applying_user_owns_the_tables(engine, monkeypatch,
 
     assert table_owner(engine, "table_a") == engine.url.username
     assert "-- NOTE: generated without --ddl-role;" in document
+
+
+def test_a_document_applies_to_a_database_that_has_none_of_its_schemas(
+    engine, monkeypatch, tmp_path
+):
+    definition = make_definition("pkg.a", "thing", schema="pass_builder")
+    path = tmp_path / "schema.sql"
+    path.write_text(render_create([definition]))
+    with engine.connect() as connection:
+        connection.execute(text("DROP SCHEMA IF EXISTS pass_builder CASCADE"))
+        connection.commit()
+
+    monkeypatch.setenv("EDUTAP_DBDEF_DSN", engine.url.render_as_string(hide_password=False))
+    assert main(["apply", str(path)]) == 0
+
+    with engine.connect() as connection:
+        found = connection.execute(
+            text("SELECT table_schema FROM information_schema.tables WHERE table_name = 'thing'")
+        ).scalar_one()
+    assert found == "pass_builder"
