@@ -14,7 +14,11 @@ def test_check_passes_when_the_schema_matches(installed, engine, monkeypatch, ca
         connection.execute(text(render_create(definitions)))
     url = engine.url.render_as_string(hide_password=False)
     monkeypatch.setenv("EDUTAP_DBDEF_DSN", str(url))
-    assert cli.main(["check"]) == 0
+    # Scoped to the package under test: the contract schema is in every run by
+    # default, and this database holds only what the fake package rendered. Leaving
+    # it in would make the test assert "no deviation" against three tables nobody
+    # created -- a true failure, and not the one this case is about.
+    assert cli.main(["check", "--packages", "pkg.a"]) == 0
     assert "in sync" in capsys.readouterr().out
 
 

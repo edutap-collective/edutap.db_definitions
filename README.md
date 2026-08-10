@@ -1,14 +1,24 @@
 # edutap.db_definitions
 
-Generates the SQL that defines an eduTAP deployment's database schema, from
-the schema definitions of the installed eduTAP packages.
+Declares the **contract schema** `public` and generates the SQL that defines an
+eduTAP deployment's database schema — its own tables plus those the installed eduTAP
+packages announce.
 
-`edutap.db_definitions` is a development-time helper, never a deployed
-service.
-It runs where you have the wanted eduTAP packages installed, and emits SQL
-files; it has no image in any stack and ships no `Dockerfile`.
+The **commands** are a development-time helper, never a deployed service: they run
+where the wanted eduTAP packages are installed and emit SQL files, and there is no
+image in any stack and no `Dockerfile`.
+
+The **declarations** are different. `person_view`, `pass_state` and `pass_instance`
+are imported at runtime by the services that read and write them, so the core install
+carries nothing a container has no use for — see [Install](#install).
 
 ## Why this exists
+
+**One schema has no owner.** `person_view` is written by a person spooler,
+`pass_state` and `pass_instance` by the pass-state consumer, and all three are read
+by `edutap.data_provider`. Until now the *reader* declared them, which is backwards:
+ownership was an accident of who happened to need a model class first. `public`
+therefore belongs to this package, and every other schema stays with its service.
 
 No service creates or alters its own tables.
 A service that reads data runs with a read-only database role and has no DDL
@@ -21,15 +31,34 @@ proprietary data provider) are the clearest cases: both only read.
 
 ## Install
 
+Two installs, because there are two audiences.
+
+**To import the contract tables** — what a service that reads or writes them does:
+
 ```shell
 pip install edutap.db_definitions
 ```
 
-Add the extras for the eduTAP packages a deployment works with; these are
+That is SQLAlchemy, SQLModel and the shared vocabulary, and nothing else. No
+migration engine, no database driver.
+
+**To run the commands:**
+
+```shell
+pip install "edutap.db_definitions[cli]"
+```
+
+Add the extras for the eduTAP packages that announce schemas of their own; these are
 only available from the eduTAP org sources, not from a public index.
 
 ```shell
-pip install "edutap.db_definitions[pass_builder,data_provider]"
+pip install "edutap.db_definitions[cli,pass_builder]"
+```
+
+```{note}
+There is no `data_provider` extra any more. That package no longer owns tables — it
+imports them from here. Installing a version that still declares them alongside this
+one makes the contract check refuse the pair, which is the correct outcome.
 ```
 
 ## Commands

@@ -7,18 +7,41 @@ name = "edutap.db_definitions"
 version = "0.1.0"
 description = "Generates the database schema SQL for an eduTAP deployment from the installed eduTAP packages"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = "EUPL-1.2"
 authors = [{ name = "eduTAP" }]
+# The core is what a declaration needs and nothing more. Since this package began
+# declaring the contract schema itself, importing it is no longer only a developer's
+# business -- `edutap.data_provider` imports the tables from here at runtime -- and a
+# reader of a database has no use for a migration engine or a synchronous driver.
+# Those moved to the `cli` extra, which is what the `edutap-dbdef` command needs.
 dependencies = [
-    "alembic>=1.13",
-    "psycopg>=3.2",
-    "pydantic-settings>=2.4",
+    # PEP 508 direct reference: public but not published to a public index. Pinned to
+    # a tag, never to a branch -- a branch reference lets somebody else's merge change
+    # this package's build without a line changing here.
+    "edutap.data_models @ git+https://github.com/edutap-collective/edutap.data_models@v0.1.0",
     "sqlalchemy>=2.0",
+    "sqlmodel>=0.0.22",
 ]
 
 [project.optional-dependencies]
+# Everything the four commands need. Without it the package still declares and still
+# imports; it just cannot render, diff, check or apply.
+cli = [
+    "alembic>=1.13",
+    # [binary] rather than bare psycopg: without it the driver needs a libpq on the
+    # system, and a machine that has none fails at connect time with "no pq wrapper
+    # available" -- measured, that is where the integration suite stopped. The wheel
+    # brings its own. This is a developer and deploy-pipeline tool, so the few
+    # megabytes are cheaper than the instruction to install libpq first.
+    "psycopg[binary]>=3.2",
+    "pydantic-settings>=2.4",
+]
 dev = [
+    # Self-referential on purpose: the test suite covers the commands, so a dev
+    # install is a cli install plus the tools. Listing the three again here would be
+    # a second place to forget one.
+    "edutap.db_definitions[cli]",
     "pdbp",
     "pytest>=8.2",
     # Pinned to one minor: ruff's isort classification changed between 0.14 and
@@ -33,11 +56,19 @@ docs = ["myst-parser", "sphinx>=8"]
 # not from a public index. Pick at install time if needed:
 #   pip install "edutap.db_definitions[pass_builder,data_provider]"
 # Omitting them from [dev] and CI ensures resolution works in public environments.
-data_provider = ["edutap.data_provider"]
+# edutap.data_provider is deliberately absent: it no longer owns tables, it imports
+# them from here. Installing it alongside this package used to be how its schema was
+# rendered; now it would announce the same three tables a second time, and the
+# contract check would refuse the pair -- correctly.
 pass_builder = ["edutap.pass_builder"]
 
 [project.scripts]
 edutap-dbdef = "edutap.db_definitions.cli:run"
+
+[tool.hatch.metadata]
+# edutap.data_models is a PEP 508 direct reference, and hatchling refuses those
+# unless a package says it means it.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/edutap"]
