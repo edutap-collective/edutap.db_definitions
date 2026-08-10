@@ -72,7 +72,7 @@ def _load_all() -> tuple[dict[str, SchemaDefinition], list[tuple[EntryPoint, str
     from .public import definition as public_definition
 
     definitions: dict[str, SchemaDefinition] = {public_definition.name: public_definition}
-    announced_by: dict[str, str] = {public_definition.name: "built in"}
+    announced_by: dict[str, str] = {public_definition.name: "the built-in contract schema"}
     failed: list[tuple[EntryPoint, str]] = []
     for point in iter_entry_points():
         try:

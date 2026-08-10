@@ -81,6 +81,22 @@ Moving it in a database that already has rows is one `INSERT` and one `DROP` —
 provided the deployed revision matches the repository. That check happens before
 anything is written and is not part of this change.
 
+## One inherited surprise, now written down
+
+`created_at` and `updated_at` look like columns the database maintains. Only half of
+that is true, and the half that is not concerns exactly the services about to be
+written against these tables.
+
+`server_default` covers the insert: a row created by plain SQL gets its timestamp
+without anyone naming it. `updated_at` is different — it is SQLAlchemy's `onupdate`,
+rendered into the UPDATE that SQLAlchemy itself issues. There is no trigger. An
+`INSERT ... ON CONFLICT DO UPDATE` written by hand, which is how a spooler or a
+consumer upserts, leaves the old value in place unless it sets the column explicitly.
+
+Nothing about that changed with this move; the declarations came across unaltered.
+It is recorded here because a reviewer asked what "maintained by the database" meant,
+and the honest answer turned out to be a requirement on every writer.
+
 ## The ordering hazard
 
 Between this change and the matching one in `edutap.data_provider`, both packages

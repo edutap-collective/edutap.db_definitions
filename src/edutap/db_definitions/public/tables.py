@@ -32,7 +32,18 @@ def _utcnow() -> datetime:
 
 
 def _timestamp(on_update: bool = False) -> sa.Column:
-    """Build a timestamptz column maintained by the database."""
+    """Build a timestamptz column whose value the database computes.
+
+    `server_default` makes the *insert* independent of the writer: a row created by
+    plain SQL gets its timestamp without anyone naming it.
+
+    `on_update` is weaker than it looks, and the difference matters for the writers
+    of these tables. It is SQLAlchemy's `onupdate`, so the `now()` call is rendered
+    into the UPDATE that SQLAlchemy itself issues -- there is no trigger on the
+    column. An `INSERT ... ON CONFLICT DO UPDATE` written by hand, which is how a
+    spooler or a consumer upserts, leaves the old value in place unless it sets the
+    column explicitly.
+    """
     kwargs: dict[str, Any] = {"server_default": sa.func.now()}
     if on_update:
         kwargs["onupdate"] = sa.func.now()
