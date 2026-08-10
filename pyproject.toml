@@ -88,3 +88,8 @@ ignore = ["D203", "D213"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["D", "S101"]
+# S106: bandit's hardcoded-password heuristic matches the argument *name*, and
+# `pass_id` and `pass_template` contain "pass". They are wallet passes, not
+# passwords. Scoped to this one file so the check still applies everywhere else --
+# the same ignore this file carried in the package it moved from.
+"tests/test_public_tables.py" = ["D", "S101", "S106"]
