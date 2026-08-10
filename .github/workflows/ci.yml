@@ -3,6 +3,19 @@ on:
   push:
     branches: [main]
   pull_request:
+
+# Every job installs into a virtualenv rather than with `uv pip install --system`.
+# The difference is not cosmetic: `setup-uv` with `python-version` installs a
+# uv-managed interpreter, which is not a *system* one, so `--system` fell back to
+# whatever the runner happened to ship. Measured on the runs before this change:
+# `lint` and `integration` reported "Using Python 3.12.3 environment at: /usr" while
+# asking for 3.13, and the 3.13 and 3.14 matrix jobs failed outright with "No system
+# Python installation found". The matrix was decoration. `uv venv` honours the
+# requested version, so it is a matrix again.
+#
+# The steps call the same make targets a developer calls. Repeating the commands here
+# is how the two drift apart, and the drift only shows up when CI passes something
+# that would have been red locally.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -14,13 +27,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python }}
-      - run: uv pip install --system -e ".[dev]"
-      - run: pytest -v
-  # `pytest` alone runs only the unit tests: pyproject sets
-  # addopts = "-m 'not integration'". Without this job the integration suite —
-  # including the only test that pins the diff renderer's statement splitting —
-  # is skipped on every push. ubuntu-latest provides the Docker daemon that
-  # testcontainers needs.
+      - run: make test-local
+
+  # `make test-local` runs only the unit tests: pyproject sets
+  # addopts = "-m 'not integration'". Without this job the integration suite --
+  # including the only test that pins the diff renderer's statement splitting -- is
+  # skipped on every push. ubuntu-latest provides the Docker daemon testcontainers
+  # needs.
   integration:
     runs-on: ubuntu-latest
     steps:
@@ -28,8 +41,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
-      - run: uv pip install --system -e ".[dev]"
-      - run: pytest -m integration -v
+      - run: make test-integration
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -37,7 +50,4 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
-      - run: uv pip install --system -e ".[dev]"
-      - run: ruff check src tests
-      - run: ruff format --check src tests
-      - run: ty check src
+      - run: make lint
