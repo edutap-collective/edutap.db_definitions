@@ -28,7 +28,7 @@ def test_diff_writes_the_file_with_the_role_header(installed, engine, monkeypatc
 
     document = target.read_text()
     assert "SET ROLE edutap_ddl;" in document
-    assert document.index("SET ROLE") < document.index("CREATE TABLE table_a")
+    assert document.index("SET ROLE") < document.index("CREATE TABLE public.table_a")
     assert document.rstrip().endswith("COMMIT;")
 
 
@@ -42,7 +42,7 @@ def test_diff_prints_to_stdout_and_warns_about_a_missing_role(
     assert cli.main(["diff"]) == 0
 
     captured = capsys.readouterr()
-    assert "CREATE TABLE table_a" in captured.out
+    assert "CREATE TABLE public.table_a" in captured.out
     assert "-- NOTE: generated without --ddl-role;" in captured.out
     assert "without --ddl-role" in captured.err
 

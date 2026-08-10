@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from edutap.db_definitions.render import RenderError, render_create, render_create_split
@@ -5,14 +7,16 @@ from tests.conftest import (
     make_cross_package_definitions,
     make_definition,
     make_definition_with_deferred_foreign_key,
+    make_definition_with_domain,
     make_definition_with_enum_and_sequence,
     make_definition_with_foreign_key,
+    make_definition_with_qualified_enum,
 )
 
 
 def test_renders_create_table_if_not_exists():
     sql = render_create([make_definition("pkg.a", "table_a")])
-    assert "CREATE TABLE IF NOT EXISTS table_a" in sql
+    assert "CREATE TABLE IF NOT EXISTS public.table_a" in sql
 
 
 def test_wraps_everything_in_one_transaction():
@@ -84,8 +88,8 @@ def test_each_package_gets_a_section_comment():
 
 def test_tables_are_ordered_by_dependency():
     sql = render_create([make_definition_with_foreign_key("pkg.fk")])
-    assert sql.index("CREATE TABLE IF NOT EXISTS parent") < sql.index(
-        "CREATE TABLE IF NOT EXISTS child"
+    assert sql.index("CREATE TABLE IF NOT EXISTS public.parent") < sql.index(
+        "CREATE TABLE IF NOT EXISTS public.child"
     )
 
 
@@ -117,7 +121,7 @@ def test_a_native_enum_type_is_created_before_the_table_that_uses_it():
     sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
     assert "CREATE TYPE provider AS ENUM ('apple', 'google');" in sql
     assert sql.index("CREATE TYPE provider") < sql.index(
-        "CREATE TABLE IF NOT EXISTS provider_thing"
+        "CREATE TABLE IF NOT EXISTS public.provider_thing"
     )
 
 
@@ -148,8 +152,37 @@ def test_a_type_is_created_once_and_before_every_package_section():
 
 def test_an_explicit_sequence_is_created_and_the_column_keeps_its_default():
     sql = render_create([make_definition_with_enum_and_sequence("pkg.enum")])
-    assert "CREATE SEQUENCE IF NOT EXISTS provider_thing_id_seq;" in sql
-    assert "nextval('provider_thing_id_seq'" in sql
+    assert "CREATE SEQUENCE IF NOT EXISTS public.provider_thing_id_seq;" in sql
+    assert "nextval('public.provider_thing_id_seq'" in sql
+
+
+def test_an_explicit_sequence_is_qualified_like_the_table_that_uses_it():
+    """A sequence is a relation, so it declares its schema the way a table does.
+
+    Nothing folds it back to the default: a bare ``CREATE SEQUENCE counter``
+    lands wherever the applying role's `search_path` resolves, which is not
+    necessarily the schema of the table whose column defaults to it.
+    """
+    sql = render_create([make_definition_with_enum_and_sequence("pkg.enum", schema="alpha")])
+    assert "CREATE SEQUENCE IF NOT EXISTS alpha.provider_thing_id_seq;" in sql
+    assert "nextval('alpha.provider_thing_id_seq'" in sql
+
+
+def test_the_schema_of_a_sequence_of_its_own_is_created():
+    """A sequence may name a schema no table of the package lives in.
+
+    Without this, `create` emitted the ``CREATE SEQUENCE seqlib.…`` with no
+    ``CREATE SCHEMA seqlib`` above it, and the document failed to apply with
+    ``InvalidSchemaName`` — while `check` never reported the schema as missing,
+    so `diff` never created it either.
+    """
+    definition = make_definition_with_enum_and_sequence(
+        "pkg.enum", schema="alpha", sequence_schema="seqlib"
+    )
+    sql = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS seqlib;" in sql
+    assert sql.index("CREATE SCHEMA IF NOT EXISTS seqlib;") < sql.index("CREATE SEQUENCE")
 
 
 def test_a_deferred_foreign_key_is_rendered_as_an_alter_table():
@@ -172,9 +205,9 @@ def test_a_foreign_key_across_a_package_boundary_renders():
     """
     provider, consumer = make_cross_package_definitions()
     sql = render_create([provider, consumer])
-    assert "REFERENCES view_source (id)" in sql
-    assert sql.index("CREATE TABLE IF NOT EXISTS view_source") < sql.index(
-        "CREATE TABLE IF NOT EXISTS view_state"
+    assert "REFERENCES public.view_source (id)" in sql
+    assert sql.index("CREATE TABLE IF NOT EXISTS public.view_source") < sql.index(
+        "CREATE TABLE IF NOT EXISTS public.view_state"
     )
 
 
@@ -192,9 +225,9 @@ def test_cross_package_rendering_keeps_the_section_comments():
 def test_split_renders_a_cross_package_foreign_key_per_package():
     provider, consumer = make_cross_package_definitions()
     documents = render_create_split([provider, consumer])
-    assert "CREATE TABLE IF NOT EXISTS view_source" in documents["pkg.provider"]
-    assert "REFERENCES view_source (id)" in documents["pkg.consumer"]
-    assert "CREATE TABLE IF NOT EXISTS view_source" not in documents["pkg.consumer"]
+    assert "CREATE TABLE IF NOT EXISTS public.view_source" in documents["pkg.provider"]
+    assert "REFERENCES public.view_source (id)" in documents["pkg.consumer"]
+    assert "CREATE TABLE IF NOT EXISTS public.view_source" not in documents["pkg.consumer"]
 
 
 def test_an_empty_selection_is_refused():
@@ -219,3 +252,226 @@ def test_split_returns_one_document_per_package():
     assert sorted(documents) == ["pkg.a", "pkg.b"]
     assert "table_a" in documents["pkg.a"]
     assert "table_b" not in documents["pkg.a"]
+
+
+def test_the_document_creates_the_schemas_it_needs():
+    definition = make_definition("pkg.a", "thing", schema="pass_builder")
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS pass_builder;" in document
+
+
+def test_public_is_never_created():
+    definition = make_definition("pkg.a", "thing", schema="public")
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA" not in document
+
+
+def test_a_schema_is_created_before_the_first_table_that_needs_it():
+    definition = make_definition("pkg.a", "thing", schema="pass_builder")
+
+    document = render_create([definition])
+
+    assert document.index("CREATE SCHEMA IF NOT EXISTS pass_builder;") < document.index(
+        "CREATE TABLE IF NOT EXISTS pass_builder.thing"
+    )
+
+
+def test_a_schema_is_created_once_even_when_two_packages_share_it():
+    a = make_definition("pkg.a", "one", schema="shared")
+    b = make_definition("pkg.b", "two", schema="shared")
+
+    document = render_create([a, b])
+
+    assert document.count("CREATE SCHEMA IF NOT EXISTS shared;") == 1
+
+
+def test_each_split_file_creates_its_own_schemas():
+    a = make_definition("pkg.a", "one", schema="alpha")
+    b = make_definition("pkg.b", "two", schema="beta")
+
+    documents = render_create_split([a, b])
+
+    assert "CREATE SCHEMA IF NOT EXISTS alpha;" in documents["pkg.a"]
+    assert "CREATE SCHEMA IF NOT EXISTS beta;" not in documents["pkg.a"]
+    assert "CREATE SCHEMA IF NOT EXISTS beta;" in documents["pkg.b"]
+
+
+def test_a_schema_that_only_holds_the_version_table_is_created_too():
+    """`version_table_schema` may name a schema no data table lives in.
+
+    Without this, Alembic's first `CREATE TABLE alembic_version_…` fails on a
+    schema nobody created — and it fails at the deployment's next migration,
+    not while generating the document, so nothing points back to here.
+    """
+    definition = replace(
+        make_definition("pkg.a", "thing", schema="pass_builder"),
+        version_table_schema="history",
+    )
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS history;" in document
+
+
+def test_a_schema_is_created_before_its_own_type_and_the_type_before_the_table():
+    """The ordering guarantee, made explicit for the schema/type/table chain.
+
+    A mutation that emits types before schemas passes every other test in this
+    file — nothing else here uses a schema-qualified type — and would still
+    break `CREATE TYPE alpha.kind` against a schema that does not exist yet.
+    """
+    definition = make_definition_with_qualified_enum("pkg.a", schema="alpha", type_name="kind")
+
+    document = render_create([definition])
+
+    assert (
+        document.index("CREATE SCHEMA IF NOT EXISTS alpha;")
+        < document.index("CREATE TYPE alpha.kind")
+        < document.index("CREATE TABLE IF NOT EXISTS alpha.thing")
+    )
+
+
+def test_split_a_schema_is_created_before_its_own_type_and_the_type_before_the_table():
+    """The same ordering guarantee, for a single-package split file."""
+    definition = make_definition_with_qualified_enum("pkg.a", schema="alpha", type_name="kind")
+
+    document = render_create_split([definition])["pkg.a"]
+
+    assert (
+        document.index("CREATE SCHEMA IF NOT EXISTS alpha;")
+        < document.index("CREATE TYPE alpha.kind")
+        < document.index("CREATE TABLE IF NOT EXISTS alpha.thing")
+    )
+
+
+def test_split_creates_the_schema_a_foreign_package_type_needs_too():
+    """A split file's type block is global (`_render_package` returns every
+    selected package's types for each package section), so `pkg.a.sql` also
+    contains `CREATE TYPE beta.kind_b` even though `pkg.a` holds no table in
+    `beta`. Without creating `beta` first, applying `pkg.a.sql` alone to a
+    fresh database fails with `InvalidSchemaName: schema "beta" does not
+    exist` — measured against a live PostgreSQL container.
+    """
+    a = make_definition_with_qualified_enum("pkg.a", schema="alpha", type_name="kind_a")
+    b = make_definition_with_qualified_enum("pkg.b", schema="beta", type_name="kind_b")
+
+    documents = render_create_split([a, b])
+
+    for document in documents.values():
+        assert document.index("CREATE SCHEMA IF NOT EXISTS alpha;") < document.index(
+            "CREATE TYPE alpha.kind_a"
+        )
+        assert document.index("CREATE SCHEMA IF NOT EXISTS beta;") < document.index(
+            "CREATE TYPE beta.kind_b"
+        )
+
+
+def test_a_type_schema_not_shared_by_any_table_is_still_created():
+    """`schema=…` may qualify a type into a schema no table in the selection
+    lives in at all — the contract accepts this as an alternative to
+    `inherit_schema=True`. Deriving schemas from table/version data alone
+    would miss it: measured, applying the document then fails with
+    `InvalidSchemaName: schema "typelib" does not exist`.
+    """
+    definition = make_definition_with_qualified_enum(
+        "pkg.a", schema="alpha2", type_name="kind", type_schema="typelib"
+    )
+
+    document = render_create([definition])
+
+    assert document.index("CREATE SCHEMA IF NOT EXISTS typelib;") < document.index(
+        "CREATE TYPE typelib.kind"
+    )
+
+
+def test_a_schema_is_created_from_its_tables_even_without_a_version_table():
+    """Mutation check: a fix that reads only the version-table schema and
+    ignores `SchemaDefinition.schemas` would pass every other test in this
+    file, because `make_definition` always sets a `version_table` whose
+    derived schema happens to agree with the table schema. A definition
+    without one — the shape `make_definition_with_foreign_key` and friends
+    produce — exposes the gap.
+    """
+    definition = make_definition_with_foreign_key("pkg.a", schema="pass_builder")
+
+    document = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS pass_builder;" in document
+
+
+def test_a_dotted_version_table_does_not_produce_a_bogus_schema():
+    """`version_table` is free-form and may itself contain a dot. Deriving the
+    version table's schema by re-splitting the already-qualified
+    `version_table_key` on its first dot would then invent a schema nobody
+    asked for — measured, `"pass_builder.mig"` alongside the real
+    `"pass_builder"`.
+    """
+    definition = replace(
+        make_definition("pkg.a", "thing", schema="pass_builder"),
+        version_table="mig.state",
+    )
+
+    document = render_create([definition])
+
+    assert document.count("CREATE SCHEMA") == 1
+    assert "pass_builder.mig" not in document
+
+
+def test_a_qualified_domain_is_created_in_its_own_schema():
+    """`DOMAIN` is special-cased in three modules and had no test in any of them."""
+    definition = make_definition_with_domain("pkg.d", schema="alpha", type_schema="typelib")
+
+    sql = render_create([definition])
+
+    assert "CREATE SCHEMA IF NOT EXISTS typelib;" in sql
+    assert "CREATE DOMAIN typelib.positive_int AS INTEGER" in sql
+    assert sql.index("CREATE DOMAIN") < sql.index("CREATE TABLE IF NOT EXISTS alpha.thing")
+
+
+def test_an_unqualified_domain_renders_without_a_schema():
+    """The shape `contract` reports as `unqualified_type`, rendered.
+
+    `create` never reaches this in practice — the contract check aborts first —
+    but it is what makes the check's reason concrete: the domain lands wherever
+    `search_path` resolves, while the table sits in `alpha`.
+    """
+    sql = render_create([make_definition_with_domain("pkg.d", schema="alpha")])
+
+    assert "CREATE DOMAIN positive_int AS INTEGER" in sql
+    assert "CREATE SCHEMA IF NOT EXISTS typelib;" not in sql
+
+
+def test_a_domains_constraints_are_lost_in_the_rendered_ddl():
+    """A pinned defect, not a desired behaviour. Do not "fix" this test.
+
+    Measured on SQLAlchemy 2.0.51: `merged_metadata` copies each table with
+    `Table.to_metadata`, which copies each column with `Column._copy`, which for
+    a `DOMAIN` calls `DOMAIN.copy()` — and that silently drops `default`,
+    `not_null`, `check`, `constraint_name` and `collation`.
+
+    A domain declared `DEFAULT '1' NOT NULL CHECK (VALUE > 0)` is therefore
+    created as a bare `INTEGER` alias, so the database accepts values the
+    declaration forbids, and `check` reports "in sync" because Alembic does not
+    compare a domain's constraints either.
+
+    This test exists so that a SQLAlchemy release which fixes `DOMAIN.copy()`
+    turns the output green-to-red here instead of changing generated DDL
+    unnoticed. When that happens, assert the constraints are present rather than
+    deleting the test.
+    """
+    definition = make_definition_with_domain(
+        "pkg.d", schema="alpha", type_schema="typelib", constrained=True
+    )
+    declared = definition.metadata.tables["alpha.thing"].c.amount.type
+    assert declared.not_null is True
+    assert declared.check is not None
+
+    sql = render_create([definition])
+
+    assert "CREATE DOMAIN typelib.positive_int AS INTEGER;" in sql
+    assert "CHECK" not in sql
+    assert "DEFAULT" not in sql

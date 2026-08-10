@@ -9,7 +9,13 @@ from sqlalchemy import MetaData, Table, create_mock_engine
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import DDLElement
 
-from .definition import NAMING_CONVENTION, SchemaDefinition
+from .definition import (
+    NAMING_CONVENTION,
+    SchemaDefinition,
+    creates_a_schema_bound_type,
+    metadata_sequences,
+    underlying_type,
+)
 
 _MOCK_URL = "postgresql+psycopg://"
 
@@ -46,7 +52,23 @@ _TYPE_PREFIXES: tuple[str, ...] = ("CREATE TYPE ", "CREATE DOMAIN ")
 """Statements creating a type, which belongs to the schema rather than a table."""
 
 _TYPES_SECTION = "-- ===== types ====="
-"""Section comment for the types, which no single package owns."""
+"""Section comment for the types, which belong to a schema rather than a table.
+
+Which schema is the package's own decision (see the ``unqualified_type``
+contract check); this section only makes sure each type is created once, before
+any table that uses it.
+"""
+
+_SCHEMAS_SECTION = "-- ===== schemas ====="
+"""Section comment for the schemas the selected packages need."""
+
+_ALWAYS_PRESENT: frozenset[str] = frozenset({"public"})
+"""Schemas never emitted, because every PostgreSQL database has them.
+
+``CREATE SCHEMA IF NOT EXISTS public`` is not merely redundant, it needs CREATE
+on the *database*, which a plain DDL role has no reason to hold. Emitting it
+would make a document fail for the one role it is meant to be applied by.
+"""
 
 _GUARDED_PREFIXES: tuple[str, ...] = (*_TYPE_PREFIXES, "ALTER TABLE ")
 """Statements with no ``IF NOT EXISTS`` form, wrapped in a DO block instead.
@@ -96,6 +118,21 @@ def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
     Merging is also what keeps a comparison honest — Alembic compares one
     MetaData against the whole schema, and comparing package by package would
     report every other package's tables as removed.
+
+    Known loss, and a real one: ``Table.to_metadata`` copies each column through
+    ``Column._copy``, which for a ``DOMAIN`` reaches SQLAlchemy 2.0.51's
+    ``DOMAIN.copy()`` — and that silently drops ``default``, ``not_null``,
+    ``check``, ``constraint_name`` and ``collation`` (measured). The document
+    rendered from this metadata therefore creates
+    ``CREATE DOMAIN typelib.positive_int AS INTEGER;`` for a domain the package
+    declared with ``DEFAULT '1' NOT NULL CHECK (VALUE > 0)``, so the database
+    accepts values the declaration forbids. ``check`` does not catch it either:
+    Alembic does not compare a domain's constraints.
+
+    The loss is SQLAlchemy's, not this function's, and the fix would be to
+    rebuild the declared type onto the copied column rather than to work around
+    it here. ``tests/test_render.py`` pins the current output so that a future
+    SQLAlchemy release changing it is noticed rather than silently absorbed.
     """
     merged = MetaData(naming_convention=_shared_naming_convention(definitions))
     for definition in definitions:
@@ -172,6 +209,103 @@ def _render_package(merged: MetaData, definition: SchemaDefinition) -> tuple[lis
     return types, [f"-- ===== {definition.name} =====", *rest]
 
 
+def needed_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+    """Return every schema the selection's tables and history need, types apart.
+
+    Public because ``compare`` has to mean the same thing by "the package's
+    schemas" as ``render`` does — it scopes ``foreign_tables`` and the
+    comparison by this set, and a second, subtly different implementation there
+    would make ``create`` create a schema that ``check`` then does not look in.
+
+    A package may keep its migration history in a schema it holds no data table
+    in — ``version_table_schema`` exists precisely to allow that. Deriving the
+    list from ``SchemaDefinition.schemas`` alone would then skip it, and
+    Alembic's first ``CREATE TABLE alembic_version_…`` would fail on a schema
+    nobody created.
+
+    Reads ``version_table_schema``/``schemas`` directly rather than parsing
+    ``version_table_key`` apart again: ``version_table`` is free-form and may
+    itself contain a dot (``"mig.state"``), and re-splitting the qualified name
+    on the first dot would then invent a schema nobody asked for.
+
+    Types are handled separately, by :func:`type_schemas`: a type's schema is
+    the type object's own decision, independent of which schema its column's
+    table lives in.
+    """
+    schemas = {schema for definition in definitions for schema in definition.schemas}
+    for definition in definitions:
+        if not definition.version_table:
+            continue
+        schema = definition.version_table_schema or (
+            definition.schemas[0] if len(definition.schemas) == 1 else None
+        )
+        if schema:
+            schemas.add(schema)
+    return schemas
+
+
+def type_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+    """Return every schema a qualified native enum or domain type names.
+
+    Reads the schema straight off the type object instead of pattern-matching
+    the rendered SQL, so this cannot drift out of sync with what :func:`_emit`
+    actually creates. Mirrors ``contract._unqualified_types``'s notion of a
+    type that gets its own ``CREATE TYPE``/``CREATE DOMAIN``: a native
+    ``Enum`` or a ``DOMAIN``, unwrapped through any container the same way —
+    via the shared :func:`~edutap.db_definitions.definition.underlying_type`.
+
+    A type may be qualified into a schema none of these definitions holds a
+    table in at all (``Enum(..., schema="typelib")`` on a table in a different
+    schema); that schema still needs creating, so it is not filtered against
+    ``needed_schemas`` here — the caller unions the two sets.
+    """
+    schemas: set[str] = set()
+    for definition in definitions:
+        for table in definition.metadata.tables.values():
+            for column in table.columns:
+                type_ = underlying_type(column.type)
+                if creates_a_schema_bound_type(type_) and type_.schema:
+                    schemas.add(type_.schema)
+    return schemas
+
+
+def sequence_schemas(definitions: Sequence[SchemaDefinition]) -> set[str]:
+    """Return every schema an explicit ``Sequence`` in the rendered DDL names.
+
+    A sequence is the fourth schema-carrying object in a ``MetaData``, after the
+    table, a foreign key's target and a column's type, and it needs its schema
+    created exactly as they do: without this, ``create`` emitted
+    ``CREATE SEQUENCE IF NOT EXISTS seqlib.counter`` with no
+    ``CREATE SCHEMA seqlib`` above it and the document failed to apply with
+    ``InvalidSchemaName``.
+
+    Kept out of :func:`needed_schemas` for the same reason type schemas are: a
+    schema that houses nothing but a sequence holds none of our tables, so
+    scanning it would report somebody else's tables as foreign. The callers
+    union the sets.
+
+    Restricted to the sequences attached to a column, which are the ones that
+    reach the document. Measured, ``Table.to_metadata`` carries a column's
+    sequence into the merged metadata but has nowhere to put a sequence
+    attached to the MetaData alone, so such a sequence is never created —
+    and a ``CREATE SCHEMA`` emitted only to house it would create an empty
+    schema, at the cost of a statement that needs ``CREATE`` on the *database*
+    from a role that may hold no such right.
+    """
+    return {
+        sequence.schema
+        for definition in definitions
+        for sequence in metadata_sequences(definition.metadata)
+        if sequence.schema and sequence.column is not None
+    }
+
+
+def schema_statements(schemas: set[str]) -> list[str]:
+    """Return one ``CREATE SCHEMA`` per schema, deduplicated and ordered."""
+    needed = sorted(schemas - _ALWAYS_PRESENT)
+    return [f"CREATE SCHEMA IF NOT EXISTS {_PREPARER.quote(schema)};" for schema in needed]
+
+
 def package_provenance(definitions: Sequence[SchemaDefinition]) -> str:
     """Return the ``name (version)`` list a document's header records."""
     return ", ".join(f"{d.name} ({_package_version(d.name)})" for d in definitions)
@@ -229,13 +363,45 @@ def render_create(
     sections: list[str] = []
     for definition in definitions:
         package_types, package_body = _render_package(merged, definition)
-        # A type belongs to the schema, not to a package, and SQLAlchemy reports
+        # A type belongs to a schema, not to a package, and SQLAlchemy reports
         # all of the metadata's types for every package. One copy, before the
         # first table that could use it.
         types.extend(statement for statement in package_types if statement not in types)
         sections.extend(package_body)
-    preamble = [_TYPES_SECTION, *types] if types else []
+    preamble = _preamble(definitions, definitions, types)
     return document(_header(definitions, timestamp), [*preamble, *sections], ddl_role)
+
+
+def _preamble(
+    own: Sequence[SchemaDefinition],
+    all_definitions: Sequence[SchemaDefinition],
+    types: Sequence[str],
+) -> list[str]:
+    """Return the schema and type statements that precede the first table.
+
+    Schemas come first: a qualified type cannot be created in a schema that
+    does not exist yet.
+
+    A file's schema set is the set its own content needs: ``own``'s tables,
+    version table and sequences, plus the type schemas of ``all_definitions`` —
+    not just ``own``'s. The type block itself is global (:func:`_render_package`
+    returns every selected package's types for each package section, see its
+    docstring), so a split file may need to create a schema it holds no table
+    of its own in, just to house another package's type. ``IF NOT EXISTS``
+    makes that harmless.
+
+    Sequences take ``own`` rather than ``all_definitions``, unlike types: a
+    sequence is emitted with the table it belongs to, so a split file carries
+    only its own.
+    """
+    lines: list[str] = []
+    needed = needed_schemas(own) | type_schemas(all_definitions) | sequence_schemas(own)
+    schemas = schema_statements(needed)
+    if schemas:
+        lines.extend([_SCHEMAS_SECTION, *schemas])
+    if types:
+        lines.extend([_TYPES_SECTION, *types])
+    return lines
 
 
 def render_create_split(
@@ -254,7 +420,7 @@ def render_create_split(
     documents: dict[str, str] = {}
     for definition in definitions:
         types, body = _render_package(merged, definition)
-        preamble = [_TYPES_SECTION, *types] if types else []
+        preamble = _preamble([definition], definitions, types)
         documents[definition.name] = document(
             _header([definition], timestamp), [*preamble, *body], ddl_role
         )

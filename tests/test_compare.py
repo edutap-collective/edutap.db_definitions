@@ -24,6 +24,7 @@ def definition_with_extra_column(name: str) -> SchemaDefinition:
         Column("id", Integer, primary_key=True),
         Column("label", String(32), nullable=False),
         Column("note", String(64), nullable=True),
+        schema="public",
     )
     return SchemaDefinition(name=name, metadata=metadata)
 
@@ -32,7 +33,7 @@ def test_merged_metadata_holds_all_tables():
     merged = merged_metadata(
         [make_definition("pkg.a", "table_a"), make_definition("pkg.b", "table_b")]
     )
-    assert sorted(merged.tables) == ["table_a", "table_b"]
+    assert sorted(merged.tables) == ["public.table_a", "public.table_b"]
 
 
 def test_merged_metadata_resolves_a_cross_package_foreign_key():
@@ -44,7 +45,10 @@ def test_merged_metadata_resolves_a_cross_package_foreign_key():
     """
     provider, consumer = make_cross_package_definitions()
     merged = merged_metadata([provider, consumer])
-    assert [table.name for table in merged.sorted_tables] == ["view_source", "view_state"]
+    assert [table.key for table in merged.sorted_tables] == [
+        "public.view_source",
+        "public.view_state",
+    ]
 
 
 def test_a_cross_package_foreign_key_is_diffed_against_a_live_schema(engine):
@@ -73,7 +77,7 @@ def test_added_column_is_reported_and_rendered(engine):
         changes = describe_changes(connection, definitions)
         sql = render_diff(connection, definitions)
     assert any("note" in change for change in changes)
-    assert "ALTER TABLE table_a ADD COLUMN note" in sql
+    assert "ALTER TABLE public.table_a ADD COLUMN note" in sql
 
 
 def test_destructive_statements_are_commented_out_by_default(engine):
@@ -114,6 +118,7 @@ def test_new_table_is_rendered_as_one_intact_create_statement(engine):
         Column("id", Integer, primary_key=True),
         Column("label", String(32), nullable=False),
         Column("note", String(64), nullable=True),
+        schema="public",
     )
     definitions = [SchemaDefinition(name="pkg.a", metadata=metadata)]
 
@@ -124,7 +129,9 @@ def test_new_table_is_rendered_as_one_intact_create_statement(engine):
     assert any("table_a" in change for change in changes)
 
     lines = sql.splitlines()
-    open_index = next(i for i, line in enumerate(lines) if line.strip() == "CREATE TABLE table_a (")
+    open_index = next(
+        i for i, line in enumerate(lines) if line.strip() == "CREATE TABLE public.table_a ("
+    )
     close_index = next(i for i, line in enumerate(lines) if line.strip() == ");")
     body = lines[open_index + 1 : close_index]
 
@@ -147,7 +154,7 @@ def test_foreign_tables_are_listed_and_left_alone(engine):
         connection.execute(text(render_create([make_definition("pkg.a", "table_a")])))
     definitions = [make_definition("pkg.a", "table_a")]
     with engine.connect() as connection:
-        assert foreign_tables(connection, definitions) == ["not_ours"]
+        assert foreign_tables(connection, definitions) == ["public.not_ours"]
         assert "not_ours" not in render_diff(connection, definitions)
 
 

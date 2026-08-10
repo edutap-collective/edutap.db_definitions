@@ -42,6 +42,108 @@ This is the only change needed in an existing package: a SQLModel subclass
 that carries its own `metadata` attribute registers its tables exclusively on
 that metadata, and the global `SQLModel.metadata` stays untouched.
 
+Give every table its schema.
+This is not optional: `edutap-dbdef` refuses a definition that leaves it to
+`search_path` to decide — see {doc}`explanation` for why.
+On a SQLModel class, set `__table_args__`; on a raw SQLAlchemy `Table`, pass
+`schema=`.
+
+```python
+class Certificate(Base, table=True):
+    __table_args__ = {"schema": "edutap_pass_builder"}
+
+    id: int = Field(primary_key=True)
+```
+
+Give an enum or domain column its schema the same way, since SQLAlchemy scopes
+a type to the *metadata* rather than to the table that uses it: pass
+`inherit_schema=True` so the type takes the schema of the table it is used
+on — the common case — or `schema="<name>"` to pin one explicitly.
+
+```python
+Column("kind", Enum("a", "b", name="kind", inherit_schema=True))
+```
+
+Skipping this is a contract violation, not a silent default: `check_contract`
+reports it as `unqualified_type`, and `create`, `diff`, and `check` refuse to
+run rather than create the type wherever `search_path` happens to resolve —
+typically `public`, a namespace every package then shares.
+Only a native enum or a `DOMAIN` needs this; `Enum(..., native_enum=False)`
+renders as a plain `VARCHAR` and creates no type at all, so it is not
+checked.
+The check walks columns, so a type that is attached only to the `MetaData`
+(`Enum(..., metadata=metadata)`) and never assigned to a column is invisible
+to it — give every type you declare a column to live on.
+
+````{warning}
+A `DOMAIN` reaches the database **without its constraints**.
+Measured on SQLAlchemy 2.0.51: rendering copies each table's columns, and
+`DOMAIN.copy()` silently drops `default`, `not_null`, `check`,
+`constraint_name` and `collation`.
+A domain declared
+
+```python
+DOMAIN("positive_int", Integer, schema="typelib",
+       default="1", not_null=True, check="VALUE > 0")
+```
+
+is created as `CREATE DOMAIN typelib.positive_int AS INTEGER;` — an alias that
+accepts `-5` and `NULL`.
+`check` does not catch it either: Alembic does not compare a domain's
+constraints, so the schema is reported as in sync.
+
+This is a data-integrity hazard, not a cosmetic gap.
+Until SQLAlchemy fixes the copy, do not rely on a domain to enforce anything.
+Put the rule where the tool does carry it — a `CheckConstraint` on the column,
+or a `NOT NULL` on the column itself — and keep the domain for the type alias
+alone.
+````
+
+Give an explicit `Sequence` its schema too.
+
+```python
+counter = Sequence("certificate_id_seq", schema="edutap_pass_builder")
+```
+
+A sequence is a relation, in the same namespace as a table, so a bare
+`CREATE SEQUENCE` lands wherever `search_path` resolves — not necessarily
+where the table whose column defaults to it lives.
+`validate()` rejects it, and unlike the table case there would be no second
+chance to notice: an unqualified sequence *applies* cleanly into the wrong
+schema, and `check` afterwards does not report a deviation, it aborts with
+`UndefinedTable`.
+This concerns only sequences you write out; the implicit one behind an
+autoincrementing integer primary key belongs to its table and needs nothing.
+
+````{warning}
+A schema on the `Sequence` is not enough by itself if that schema is the
+connecting role's *default* one and the table is not in it.
+Measured: `Sequence("counter", schema="public")` on a table in
+`pass_builder`, applied by a role whose default schema is `public`, passes
+`validate()`, passes the contract check, and applies cleanly — then `check`
+and `diff` **abort**, for good, with `UndefinedTable: relation
+"pass_builder.counter" does not exist`.
+
+The mechanism: PostgreSQL stores the column default unqualified,
+`nextval('counter')`, because the default schema is on `search_path` at the
+moment the table is created. SQLAlchemy's PostgreSQL reflection then
+re-qualifies that bare name with the *table's* schema before looking it
+up — `"pass_builder".counter` — and finds nothing there, because the
+sequence actually lives in `public`.
+
+This is worse than a reported deviation: `check` produces no verdict at
+all, so a deployment gated on it is stuck, not informed. And it depends on
+the DDL role's `search_path`, not on the definition — the same `schema.sql`
+is green where the connecting role's default schema is `pass_builder` and
+permanently red where it is `public`.
+
+Every other placement is clean: a sequence in a third schema, a sequence in
+the table's own schema, and a sequence in `public` when the connection's
+default schema is something else all compare and apply without incident.
+Keep a sequence in the schema of the table that uses it, or in a schema that
+is not the connection's default.
+````
+
 Describe the package with a `SchemaDefinition` and announce it through an
 entry point in the package's own `pyproject.toml`.
 
@@ -68,9 +170,19 @@ metadata in that order.
 A foreign key into another package's table without the matching `requires`
 entry is a contract violation: `create`, `diff`, and `check` refuse to run and
 name both packages.
+Write the target schema-qualified too, `ForeignKey("public.pass_state.id")`
+rather than `ForeignKey("pass_state.id")`: an unqualified target string
+escapes this check entirely — nothing about it names a package for the check
+to compare against `requires` — so nothing stops the run here. It still
+fails, just later and from SQLAlchemy itself (`NoReferencedTableError`),
+with a message that never mentions `requires`.
 Give every package its own `version_table` name if it uses Alembic: a shared
 database with one `alembic_version` table for every package would let the
 packages overwrite each other's migration history.
+Add `version_table_schema` too once the package holds tables in more than one
+schema — `validate()` cannot otherwise tell which of them holds the history
+table. With exactly one schema, it is derived automatically and can be left
+unset.
 
 If `edutap-dbdef check` reports a `naming_convention` violation for your
 package, compare your copy against the block above — a copy-paste drift is
@@ -109,6 +221,32 @@ deployment's default-privilege grants silently do not apply to them.
 A file generated without the flag says so in its header — if you find a
 `-- NOTE: generated without --ddl-role; ...` line in a `schema.sql` destined
 for this deployment, regenerate it with the flag.
+```
+
+(ddl-role-scope)=
+
+```{note}
+`--ddl-role` is the whole of this tool's part in the privilege model.
+It decides *who owns* the objects it creates; it does not grant anything, and
+it never will.
+
+Creating roles, granting per-schema `USAGE` and `SELECT` to the services that
+read the data, and maintaining the `ALTER DEFAULT PRIVILEGES` rules that make
+those grants apply to future tables are the deployment's work, in Ansible —
+deliberately not this tool's.
+Two reasons: a generated `schema.sql` is committed to a deploy repository and
+reviewed by hand, which is the wrong place to keep a privilege model that has
+to stay correct between releases; and grants are per site, while the rendered
+DDL is the same everywhere a package is installed.
+
+Alembic's own `env.py` is outside the boundary for the same reason.
+A package declares `alembic_ini` and `version_table` so that this tool knows
+which history table belongs to whom, and that is where the relationship ends —
+running migrations stays with the package's own Alembic setup.
+
+So a fresh schema-per-service split needs three things, not one: this tool for
+the DDL, the deployment's role and grant management for who may use it, and
+each package's Alembic for what happens next.
 ```
 
 Review `schema.sql`, then commit it into the deploy repository.

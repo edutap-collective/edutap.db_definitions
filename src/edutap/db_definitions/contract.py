@@ -4,7 +4,12 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from .definition import NAMING_CONVENTION, SchemaDefinition
+from .definition import (
+    NAMING_CONVENTION,
+    SchemaDefinition,
+    creates_a_schema_bound_type,
+    underlying_type,
+)
 
 
 class ContractError(Exception):
@@ -36,10 +41,17 @@ def _table_collisions(definitions: Sequence[SchemaDefinition]) -> list[ContractV
 def _version_table_collisions(
     definitions: Sequence[SchemaDefinition],
 ) -> list[ContractViolation]:
+    """Report two packages claiming the same migration-history table.
+
+    Keyed on the qualified name: two packages may both call their history table
+    ``alembic_version`` as long as they keep it in their own schema, which is
+    the normal case once every package owns one.
+    """
     owners: dict[str, list[str]] = defaultdict(list)
     for definition in definitions:
-        if definition.version_table:
-            owners[definition.version_table].append(definition.name)
+        key = definition.version_table_key
+        if key:
+            owners[key].append(definition.name)
     return [
         ContractViolation(
             "version_table_collision",
@@ -104,6 +116,64 @@ def _undeclared_dependencies(definitions: Sequence[SchemaDefinition]) -> list[Co
     return violations
 
 
+def _unqualified_types(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
+    """Report an enum or domain type that does not say which schema it lives in.
+
+    SQLAlchemy scopes a type to the *metadata*, not to the table that uses it.
+    A type declared without a schema therefore renders as ``CREATE TYPE
+    flavour`` and lands in whatever ``search_path`` resolves to — typically
+    ``public`` — while the table using it sits in its owner's schema.
+
+    With rights granted per schema that is not cosmetic: it puts one service's
+    type into the contract schema, where the naming space is shared and a second
+    package can collide with it.
+
+    Matched on ``Enum`` and ``DOMAIN`` rather than on the base ``SchemaType``,
+    which is the tempting but wrong test: ``Boolean`` is a ``SchemaType`` too,
+    but it carries no ``schema`` attribute at all — ``Boolean().schema`` raises
+    ``AttributeError`` rather than returning ``None``. A check that reads it
+    via ``getattr(type_, "schema", None)`` would silently treat every boolean
+    column as one more unqualified type, the most common column type there is.
+
+    A non-native ``Enum`` (``native_enum=False``) is excluded on purpose: it
+    renders as a plain ``VARCHAR`` column, PostgreSQL creates no type for it,
+    and flagging it aborts ``create``/``diff``/``check`` — via
+    :func:`raise_on_violations` — for a package that has done nothing wrong.
+    ``DOMAIN`` has no such switch; it always creates a type.
+
+    Every occurrence of a name is collected into one violation instead of
+    reporting only the first: measured, two columns that share a type name
+    still produce only one ``CREATE TYPE`` between them, so the second column
+    silently takes on the first one's value list — fixing only the first
+    reported site would leave that behind unnoticed.
+    """
+    violations = []
+    for definition in definitions:
+        sites: dict[str, list[str]] = defaultdict(list)
+        for table in definition.metadata.tables.values():
+            for column in table.columns:
+                type_ = underlying_type(column.type)
+                if not creates_a_schema_bound_type(type_) or type_.schema:
+                    continue
+                name = type_.name
+                if name is None:
+                    # Unreachable in practice: a native Enum without a name fails to
+                    # compile (`CompileError: PostgreSQL ENUM type requires a name`),
+                    # and DOMAIN takes its name as a required positional argument.
+                    continue
+                sites[name].append(f"{table.key}.{column.name}")
+        for name, locations in sorted(sites.items()):
+            violations.append(
+                ContractViolation(
+                    "unqualified_type",
+                    f"{definition.name}: type {name!r} on {', '.join(locations)} "
+                    "declares no schema, so it would be created outside its table's "
+                    "schema. Pass inherit_schema=True (or schema=…) on the type.",
+                )
+            )
+    return violations
+
+
 def check_contract(definitions: Sequence[SchemaDefinition]) -> list[ContractViolation]:
     """Return every contract violation across the given definitions."""
     return [
@@ -111,6 +181,7 @@ def check_contract(definitions: Sequence[SchemaDefinition]) -> list[ContractViol
         *_version_table_collisions(definitions),
         *_convention_deviations(definitions),
         *_undeclared_dependencies(definitions),
+        *_unqualified_types(definitions),
     ]
 
 
