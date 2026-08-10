@@ -7,6 +7,7 @@ from edutap.db_definitions.definition import (
     SchemaDefinition,
 )
 from edutap.db_definitions.discovery import DiscoveryError, load_definitions
+from edutap.db_definitions.public import NAME as PUBLIC_NAME
 from tests.conftest import BrokenEntryPoint, FakeEntryPoint, make_definition
 
 
@@ -15,19 +16,29 @@ def definition_without_tables(name: str) -> SchemaDefinition:
     return SchemaDefinition(name=name, metadata=MetaData(naming_convention=NAMING_CONVENTION))
 
 
+def announced(loaded):
+    """Names of the discovered packages, without this package's built-in schema.
+
+    The contract schema is always present and is covered by `test_public.py`. These
+    tests are about what an entry point announces, so repeating it in every
+    expectation would say nothing and hide what each case is actually testing.
+    """
+    return [definition.name for definition in loaded if definition.name != PUBLIC_NAME]
+
+
 def test_loads_all_installed_definitions(installed):
     installed([make_definition("pkg.a", "table_a"), make_definition("pkg.b", "table_b")])
-    assert [d.name for d in load_definitions()] == ["pkg.a", "pkg.b"]
+    assert announced(load_definitions()) == ["pkg.a", "pkg.b"]
 
 
 def test_include_narrows_the_selection(installed):
     installed([make_definition("pkg.a", "table_a"), make_definition("pkg.b", "table_b")])
-    assert [d.name for d in load_definitions(include=["pkg.b"])] == ["pkg.b"]
+    assert announced(load_definitions(include=["pkg.b"])) == ["pkg.b"]
 
 
 def test_exclude_removes_a_package(installed):
     installed([make_definition("pkg.a", "table_a"), make_definition("pkg.b", "table_b")])
-    assert [d.name for d in load_definitions(exclude=["pkg.a"])] == ["pkg.b"]
+    assert announced(load_definitions(exclude=["pkg.a"])) == ["pkg.b"]
 
 
 def test_a_requested_but_missing_package_is_skipped_not_fatal(installed, caplog):
@@ -45,12 +56,12 @@ def test_requires_determines_the_order(installed):
             make_definition("pkg.early", "table_early"),
         ]
     )
-    assert [d.name for d in load_definitions()] == ["pkg.early", "pkg.late"]
+    assert announced(load_definitions()) == ["pkg.early", "pkg.late"]
 
 
 def test_independent_packages_are_ordered_by_name(installed):
     installed([make_definition("pkg.z", "table_z"), make_definition("pkg.a", "table_a")])
-    assert [d.name for d in load_definitions()] == ["pkg.a", "pkg.z"]
+    assert announced(load_definitions()) == ["pkg.a", "pkg.z"]
 
 
 def test_a_dependency_cycle_is_an_error(installed):
@@ -66,7 +77,7 @@ def test_a_dependency_cycle_is_an_error(installed):
 
 def test_a_requires_outside_the_selection_is_ignored(installed):
     installed([make_definition("pkg.a", "table_a", requires=("pkg.absent",))])
-    assert [d.name for d in load_definitions()] == ["pkg.a"]
+    assert announced(load_definitions()) == ["pkg.a"]
 
 
 def test_two_entry_points_for_the_same_package_name_are_an_error(installed_entry_points):
@@ -183,12 +194,12 @@ def test_a_broken_package_excluded_by_name_is_not_fatal_with_no_selection(
     )
     with caplog.at_level("WARNING"):
         loaded = load_definitions(exclude=["pkg.b"])
-    assert [d.name for d in loaded] == ["pkg.a"]
+    assert announced(loaded) == ["pkg.a"]
 
 
 def test_an_invalid_definition_outside_the_selection_is_not_fatal(installed):
     installed([make_definition("pkg.a", "table_a"), definition_without_tables("pkg.empty")])
-    assert [d.name for d in load_definitions(include=["pkg.a"])] == ["pkg.a"]
+    assert announced(load_definitions(include=["pkg.a"])) == ["pkg.a"]
 
 
 def test_an_invalid_definition_inside_the_selection_is_reported(installed):

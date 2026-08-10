@@ -144,6 +144,14 @@ Keep a sequence in the schema of the table that uses it, or in a schema that
 is not the connection's default.
 ````
 
+```{note}
+This is how a package announces a schema **it owns**. The contract schema `public`
+is different: it belongs to no service, is declared inside this package, and is
+registered internally — it needs no entry point and appears in every run. Its tables
+are `person_view`, `pass_state` and `pass_instance`, and a package that declares one
+of them a second time is refused by the collision check.
+```
+
 Describe the package with a `SchemaDefinition` and announce it through an
 entry point in the package's own `pyproject.toml`.
 
@@ -197,7 +205,7 @@ Install `edutap.db_definitions` with the extras for the packages this
 deployment runs.
 
 ```shell
-pip install "edutap.db_definitions[pass_builder,data_provider]"
+pip install "edutap.db_definitions[cli,pass_builder]"
 ```
 
 Generate the SQL with `--ddl-role edutap_ddl`.

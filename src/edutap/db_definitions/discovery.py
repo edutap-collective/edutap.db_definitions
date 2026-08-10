@@ -65,8 +65,14 @@ def _load_all() -> tuple[dict[str, SchemaDefinition], list[tuple[EntryPoint, str
     keyed by entry point: the fakes tests install are plain, unhashable
     dataclasses.)
     """
-    definitions: dict[str, SchemaDefinition] = {}
-    announced_by: dict[str, str] = {}
+    # The contract schema is this package's own and is registered here rather than
+    # announced through an entry point: it would be metadata pointing at the module
+    # that reads it. It goes in first so a package colliding with it is reported
+    # against the built-in name, which is the direction that reads correctly.
+    from .public import definition as public_definition
+
+    definitions: dict[str, SchemaDefinition] = {public_definition.name: public_definition}
+    announced_by: dict[str, str] = {public_definition.name: "built in"}
     failed: list[tuple[EntryPoint, str]] = []
     for point in iter_entry_points():
         try:
