@@ -29,7 +29,12 @@ dependencies = [
 # imports; it just cannot render, diff, check or apply.
 cli = [
     "alembic>=1.13",
-    "psycopg>=3.2",
+    # [binary] rather than bare psycopg: without it the driver needs a libpq on the
+    # system, and a machine that has none fails at connect time with "no pq wrapper
+    # available" -- measured, that is where the integration suite stopped. The wheel
+    # brings its own. This is a developer and deploy-pipeline tool, so the few
+    # megabytes are cheaper than the instruction to install libpq first.
+    "psycopg[binary]>=3.2",
     "pydantic-settings>=2.4",
 ]
 dev = [

@@ -494,7 +494,9 @@ def test_check_passes_once_the_history_schema_exists(
     apply_sql(render_create([definition]), dsn(engine_with_schemas))
     monkeypatch.setenv("EDUTAP_DBDEF_DSN", dsn(engine_with_schemas))
 
-    assert cli.main(["check"]) == 0
+    # Scoped: the contract schema is in every run by default and its tables are not
+    # in this database. See test_cli_check for the same reasoning.
+    assert cli.main(["check", "--packages", definition.name]) == 0
     assert "in sync" in capsys.readouterr().out
 
 
