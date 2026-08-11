@@ -3,6 +3,7 @@
 import io
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
+from typing import NamedTuple
 
 from alembic.autogenerate import compare_metadata, produce_migrations
 from alembic.migration import MigrationContext
@@ -33,12 +34,14 @@ from .render import (
 _DESTRUCTIVE = ("DROP TABLE", "DROP COLUMN", "DROP CONSTRAINT", "DROP INDEX")
 
 __all__ = [
+    "RenderedDiff",
     "comparison_metadata",
     "describe_changes",
     "foreign_tables",
     "merged_metadata",
     "missing_schemas",
     "render_diff",
+    "rendered_diff",
 ]
 
 
@@ -425,6 +428,29 @@ def _declared_column(table: Table, name: str) -> Column | None:
     return next((column for column in table.columns if column.name == name), None)
 
 
+class RenderedDiff(NamedTuple):
+    """A rendered diff, with the statements kept apart from the document.
+
+    ``document`` is what ``diff`` writes out and ``apply`` executes. The two
+    tuples are the same statements before they were assembled into it, split by
+    the classification :data:`_DESTRUCTIVE` makes, and they exist so that a
+    caller can *decide* on a diff rather than only print it.
+
+    That is what the migration container needs. A marker in the document says
+    "this statement was left out"; only a caller that can see the statements
+    can end the run because of them, and name them in a deploy log where
+    nobody has the file.
+
+    ``additive`` carries the ``CREATE SCHEMA`` statements the diff owes its own
+    body as well, so "there is nothing to do" is decided by one empty tuple and
+    not by an empty tuple plus a separate schema check.
+    """
+
+    document: str
+    additive: tuple[str, ...]
+    destructive: tuple[str, ...]
+
+
 def render_diff(
     connection: Connection,
     definitions: Sequence[SchemaDefinition],
@@ -432,6 +458,22 @@ def render_diff(
     allow_destructive: bool = False,
 ) -> str:
     """Render the ALTER statements that bring the database in line."""
+    return rendered_diff(connection, definitions, ddl_role, allow_destructive).document
+
+
+def rendered_diff(
+    connection: Connection,
+    definitions: Sequence[SchemaDefinition],
+    ddl_role: str | None = None,
+    allow_destructive: bool = False,
+) -> RenderedDiff:
+    """Render the diff and return it with its statements classified.
+
+    The document is assembled exactly as before -- a destructive statement is
+    commented out unless ``allow_destructive`` -- so ``diff``'s output is
+    unchanged. What is new is that the classification survives the assembly
+    instead of being readable only as a comment marker in the text.
+    """
     with _reflection_search_path(connection):
         migrations = produce_migrations(
             _context(connection, definitions), comparison_metadata(connection, definitions)
@@ -458,7 +500,10 @@ def render_diff(
         "-- Limits: renames appear as drop + add, some type changes render incompletely,",
         "-- and data migrations are out of scope. Read this before applying it.",
     ]
+    schemas = _create_schemas(connection, definitions)
     body: list[str] = []
+    additive: list[str] = list(schemas)
+    destructive_statements: list[str] = []
     # Operations.invoke() writes one full (possibly multi-line, e.g. CREATE TABLE)
     # statement per call, each already terminated with a semicolon and separated
     # from the next by a blank line. Split on statement boundaries, not physical
@@ -471,6 +516,10 @@ def render_diff(
         if not statement.endswith(";"):
             statement += ";"
         destructive = any(marker in statement.upper() for marker in _DESTRUCTIVE)
+        if destructive:
+            destructive_statements.append(statement)
+        else:
+            additive.append(statement)
         if destructive and not allow_destructive:
             commented = "\n".join(
                 f"-- DESTRUCTIVE, enable with --allow-destructive: {stmt_line}"
@@ -479,7 +528,11 @@ def render_diff(
             body.append(commented)
         else:
             body.append(statement)
-    return document(header, [*_create_schemas(connection, definitions), *body], ddl_role)
+    return RenderedDiff(
+        document=document(header, [*schemas, *body], ddl_role),
+        additive=tuple(additive),
+        destructive=tuple(destructive_statements),
+    )
 
 
 def _create_schemas(connection: Connection, definitions: Sequence[SchemaDefinition]) -> list[str]:

@@ -1,4 +1,4 @@
-"""Command line interface: create, diff, check, apply."""
+"""Command line interface: create, diff, check, apply, migrate."""
 
 import argparse
 import pathlib
@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .compare import describe_changes, foreign_tables, render_diff
+from .compare import describe_changes, foreign_tables, render_diff, rendered_diff
 from .contract import ContractError, check_contract, raise_on_violations
 from .definition import DefinitionError
 from .discovery import DiscoveryError, load_definitions
@@ -72,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
     apply_command = subcommands.add_parser("apply", help="apply a generated SQL file")
     apply_command.add_argument("file", type=pathlib.Path, help="the SQL file to apply")
     apply_command.add_argument("--dry-run", action="store_true", help="do not execute anything")
+
+    migrate = subcommands.add_parser(
+        "migrate", help="bring the database in line, refusing anything destructive"
+    )
+    _add_selection_arguments(migrate)
+    migrate.add_argument("--ddl-role", default=None, help="emit SET ROLE <role> in the header")
+    migrate.add_argument(
+        "--dry-run", action="store_true", help="report what would be applied, change nothing"
+    )
     return parser
 
 
@@ -174,6 +183,98 @@ def _command_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Exit code for a diff this command refuses to apply.
+#:
+#: Its own code, distinct from 1. A deploy that stops here has found nothing broken --
+#: it has found a change that a person has to look at, and telling that apart from "the
+#: database is unreachable" is the difference between paging someone and filing a task.
+EXIT_REFUSED = 3
+
+
+def _command_migrate(args: argparse.Namespace) -> int:
+    """Bring the database in line with the definitions, or refuse and say why.
+
+    Additive changes are applied; anything that drops is refused and ends the run. The
+    asymmetry is the whole point: a change that only adds fails, at worst, on something
+    that already exists, while a drop removes something that is not coming back -- and
+    no deploy at three in the morning gets to decide that on its own.
+
+    The advisory lock is held across **rendering and applying**, because the race is on
+    the read: the renderer reflects the database to decide what is missing, and the
+    statements it produces carry no `IF NOT EXISTS`. Two runs that both decide "this
+    table is absent" would have the second one fail a deploy that was correct.
+    """
+    # Imported here rather than at module scope, like the other database commands:
+    # the core install carries no driver, and importing one at import time would make
+    # `create` unusable wherever `[cli]` is not installed.
+    from .execute import advisory_lock, apply_sql
+    from .settings import Settings
+
+    definitions = _load_checked(args)
+    _warn_without_ddl_role(args)
+    engine = _connect()
+    try:
+        with engine.connect() as connection, advisory_lock(connection):
+            diff = rendered_diff(connection, definitions, args.ddl_role)
+            skipped = foreign_tables(connection, definitions)
+            # Reflection took an AccessShareLock on every table it looked at. Applying
+            # runs on its own connection, and an ALTER TABLE would wait for this one --
+            # which is why the lock above is session-scoped and survives this rollback.
+            connection.rollback()
+
+            if skipped:
+                sys.stderr.write(f"Ignored tables of other owners: {', '.join(skipped)}\n")
+
+            if diff.destructive:
+                _report_refusal(diff.destructive)
+                return EXIT_REFUSED
+
+            if not diff.additive:
+                sys.stdout.write("Schema is in sync with the definitions; nothing to do.\n")
+                return 0
+
+            if args.dry_run:
+                _report_pending(diff.additive)
+                return 0
+
+            executed = apply_sql(diff.document, Settings().url())
+            sys.stdout.write(f"Applied {executed} statement(s).\n")
+            for statement in diff.additive:
+                sys.stdout.write(f"  {_one_line(statement)}\n")
+            return 0
+    finally:
+        engine.dispose()
+
+
+def _report_refusal(statements: tuple[str, ...]) -> None:
+    """Say what was refused, in full, on stderr.
+
+    The statements themselves and not a count. Whoever reads this is looking at a red
+    deploy in a log window, without the file and usually without the context -- "1
+    destructive change detected" tells them to go looking, the statement tells them
+    what happened.
+    """
+    sys.stderr.write(
+        f"Refused: the diff would drop something ({len(statements)} statement(s)).\n"
+        "Nothing was applied. A drop is not a deploy-time decision -- prepare it as SQL,\n"
+        "have it reviewed, and apply it deliberately.\n"
+    )
+    for statement in statements:
+        sys.stderr.write(f"  {_one_line(statement)}\n")
+
+
+def _report_pending(statements: tuple[str, ...]) -> None:
+    """Say what a real run would apply."""
+    sys.stdout.write(f"Dry run: {len(statements)} statement(s) would be applied.\n")
+    for statement in statements:
+        sys.stdout.write(f"  {_one_line(statement)}\n")
+
+
+def _one_line(statement: str) -> str:
+    """Collapse a possibly multi-line statement onto one log line."""
+    return " ".join(statement.split())
+
+
 def _first_line(error: Exception) -> str:
     """Return an error's first line; SQLAlchemy's messages carry several."""
     return str(error).strip().splitlines()[0]
@@ -193,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
             return _command_check(args)
         if args.command == "apply":
             return _command_apply(args)
+        if args.command == "migrate":
+            return _command_migrate(args)
     # Every failure an operator can cause becomes a message and exit code 1.
     # A traceback here is noise at best: this runs while preparing a schema
     # change that a privileged role will apply.
