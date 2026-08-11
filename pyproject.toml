@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "edutap.db_definitions"
-version = "0.1.0"
+version = "0.1.1"
 description = "Generates the database schema SQL for an eduTAP deployment from the installed eduTAP packages"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -19,7 +19,7 @@ dependencies = [
     # PEP 508 direct reference: public but not published to a public index. Pinned to
     # a tag, never to a branch -- a branch reference lets somebody else's merge change
     # this package's build without a line changing here.
-    "edutap.data_models @ git+https://github.com/edutap-collective/edutap.data_models@v0.1.0",
+    "edutap.data_models @ git+https://github.com/edutap-collective/edutap.data_models@v0.2.0",
     "sqlalchemy>=2.0",
     "sqlmodel>=0.0.22",
 ]
