@@ -206,6 +206,17 @@ at, and telling the two apart decides whether somebody gets paged.
 The refusal prints the statements themselves, not a count. Whoever reads it is
 looking at a red deploy in a log window, without the file.
 
+```{warning}
+**The rule catches `DROP`, and only `DROP`.** A **type change is applied, not
+refused** — `ALTER COLUMN ... TYPE` carries no destructive marker, and
+narrowing a type can lose data as thoroughly as dropping a column. Measured on
+2026-08-11 and pinned by a test, so that a future change to the classification
+has to come past it.
+
+If a type change is in the diff, it belongs in a reviewed SQL step, not in a
+deploy.
+```
+
 ```{note}
 A **rename renders as drop + add**, so renaming a column or table stops the
 deploy and has to be applied deliberately. That is the intended outcome of the
@@ -215,6 +226,11 @@ rule, and it will still surprise someone.
 the build. On a table that is already large this is an outage;
 `CREATE INDEX CONCURRENTLY` cannot run inside the transaction the document
 wraps everything in, so such an index is a change to prepare by hand.
+
+One drop refuses the **whole** diff, including its additive half. A deploy that
+applied what it could and then stopped would leave the schema in a state
+neither set of declarations describes, and the next run would diff against
+that.
 ```
 
 While it runs, `migrate` holds a session-scoped PostgreSQL advisory lock, so
