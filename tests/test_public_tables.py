@@ -32,6 +32,8 @@ def test_tables_live_on_the_package_metadata_only():
         "public.person_view",
         "public.pass_state",
         "public.pass_instance",
+        "public.photo",
+        "public.photo_review",
     }
     assert "public.person_view" not in SQLModel.metadata.tables
 
@@ -44,7 +46,7 @@ def test_contract_tables_declare_the_public_schema_explicitly():
     two deployments of one package with different layouts. Declaring the schema
     removes the ambiguity.
     """
-    for name in ("person_view", "pass_state", "pass_instance"):
+    for name in ("person_view", "pass_state", "pass_instance", "photo", "photo_review"):
         assert metadata.tables[f"public.{name}"].schema == "public"
 
 
@@ -248,3 +250,166 @@ def test_the_python_side_default_is_timezone_aware():
 
     assert now.tzinfo is not None
     assert now.utcoffset() == UTC.utcoffset(None)
+
+
+def test_photo_is_keyed_by_person_and_version():
+    """One row per uploaded version, not per person.
+
+    The history is the point: a deployment that has to evidence every photograph it
+    ever accepted cannot keep only the current one.
+    """
+    table = metadata.tables["public.photo"]
+    assert [column.name for column in table.primary_key.columns] == ["person_uid", "version"]
+
+
+def test_photo_keys_use_byte_collation():
+    """Same reasoning as `person_view`: comparison order must not depend on a locale."""
+    table = metadata.tables["public.photo"]
+    for name in ("person_uid", "version"):
+        assert table.columns[name].type.collation == "C"
+
+
+def test_photo_allows_exactly_one_active_version_per_person():
+    """The invariant lives in the database, not in the service.
+
+    Two reviewers approving different versions in the same second is not a rare
+    race -- it is what a queue with several people working it produces. Application
+    logic checking "is there already an active one" loses that race by construction;
+    a partial unique index cannot.
+
+    Rendered rather than inspected: a `postgresql_where` clause is not visible on
+    `index.columns`, so asserting on the metadata alone would pass while the SQL
+    said something else.
+    """
+    table = metadata.tables["public.photo"]
+    by_name = {index.name: index for index in table.indexes}
+    assert "uq_photo_one_active_per_person" in by_name
+
+    index = by_name["uq_photo_one_active_per_person"]
+    assert index.unique
+
+    rendered = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+    assert "UNIQUE" in rendered
+    assert "person_uid" in rendered
+    assert "state = 'active'" in rendered
+
+
+def test_photo_vocabulary_columns_are_text_not_native_enums():
+    """A new evidence kind must not force a migration."""
+    table = metadata.tables["public.photo"]
+    for name in ("state", "evidence_kind"):
+        assert isinstance(table.columns[name].type, sa.String)
+        assert not isinstance(table.columns[name].type, sa.Enum)
+
+
+def test_photo_records_the_evidence_only_once_reviewed():
+    """Nullable because a `pending` row has no evidence yet.
+
+    That a version cannot become `active` without one is a rule the writing service
+    enforces; the column only has to permit the state before it holds.
+    """
+    assert metadata.tables["public.photo"].columns["evidence_kind"].nullable
+
+
+def test_photo_hashes_the_sanitised_image_at_fixed_width():
+    """`CHAR(64)`: a SHA-256 in hex is never shorter and never longer."""
+    column = metadata.tables["public.photo"].columns["sha256"]
+    assert isinstance(column.type, sa.String)
+    assert column.type.length == 64
+    assert not column.nullable
+
+
+def test_photo_holds_a_legal_hold_as_a_timestamp_not_a_flag():
+    """Present means held -- and it says since when, by whom and why.
+
+    A boolean would answer "is it held" and nothing a prosecutor asks. The review
+    trail carries the same facts, but every deletion path has to consult this in one
+    read, not search a history.
+    """
+    table = metadata.tables["public.photo"]
+    column = table.columns["legal_hold_since"]
+    assert isinstance(column.type, sa.DateTime)
+    assert column.type.timezone
+    assert column.nullable
+    for name in ("legal_hold_by", "legal_hold_reason"):
+        assert table.columns[name].nullable
+
+
+def test_photo_separates_purging_the_bytes_from_deleting_the_row():
+    """The review trail outlives the image.
+
+    When a person deletes a version, or the retention run expires a rejected one,
+    the objects go and the row stays with `purged_at` set. Deleting the row instead
+    would take the trail with it through the cascade, which is exactly the evidence
+    the deployment is keeping.
+    """
+    assert metadata.tables["public.photo"].columns["purged_at"].nullable
+
+
+def test_photo_dates_the_notification_that_starts_the_retention_clock():
+    """The clock runs from when the person was told, not from the rejection.
+
+    Someone on a three-week holiday would otherwise lose the photo before ever
+    learning it was refused.
+    """
+    column = metadata.tables["public.photo"].columns["notified_at"]
+    assert isinstance(column.type, sa.DateTime)
+    assert column.type.timezone
+    assert column.nullable
+
+
+def test_photo_does_not_reference_the_person_view():
+    """No foreign key, and not only because the key would not fit.
+
+    `person_view` is keyed by `(person_uid, view_type)`, so a single-column
+    reference is impossible anyway. The reason it stays absent even so is that a
+    photograph exists independently of whether a view row currently does -- the same
+    reasoning `pass_state` follows.
+    """
+    assert metadata.tables["public.photo"].foreign_keys == set()
+
+
+def test_photo_review_is_keyed_by_its_own_identifier():
+    """One row per transition, so the key cannot be the version."""
+    table = metadata.tables["public.photo_review"]
+    assert [column.name for column in table.primary_key.columns] == ["review_id"]
+
+
+def test_photo_review_cascades_from_the_photo():
+    """The row survives a purge, not the deletion of the person.
+
+    Purging clears the bytes and keeps the row, so the trail stays. Deleting the
+    person removes the `photo` row itself, and the trail is meant to go with it --
+    a deployment that keeps no data about a person keeps no photo evidence either.
+    """
+    table = metadata.tables["public.photo_review"]
+    for name in ("person_uid", "version"):
+        foreign_key = next(iter(table.columns[name].foreign_keys))
+        assert foreign_key.column.table.fullname == "public.photo"
+        assert foreign_key.ondelete == "CASCADE"
+
+
+def test_photo_review_repeats_the_hash_so_it_reads_after_the_purge():
+    """Without it an entry says "a photo was refused" and cannot say which."""
+    column = metadata.tables["public.photo_review"].columns["sha256"]
+    assert column.type.length == 64
+    assert not column.nullable
+
+
+def test_photo_review_has_no_updated_column():
+    """Append-only: a mistaken entry is corrected by a further entry.
+
+    An `updated_at` would invite exactly the in-place edit the trail exists to
+    prevent.
+    """
+    assert "updated_at" not in metadata.tables["public.photo_review"].columns
+
+
+def test_photo_review_keeps_what_the_reviewer_saw():
+    """The validation report summary, and any copyright claim found in the upload.
+
+    JSONB rather than columns: what a reviewer is shown will grow, and each addition
+    would otherwise be a migration of a table nobody queries by those fields.
+    """
+    column = metadata.tables["public.photo_review"].columns["details"]
+    assert isinstance(column.type, JSONB)

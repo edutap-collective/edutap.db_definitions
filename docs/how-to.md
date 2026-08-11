@@ -148,8 +148,8 @@ is not the connection's default.
 This is how a package announces a schema **it owns**. The contract schema `public`
 is different: it belongs to no service, is declared inside this package, and is
 registered internally — it needs no entry point and appears in every run. Its tables
-are `person_view`, `pass_state` and `pass_instance`, and a package that declares one
-of them a second time is refused by the collision check.
+are `person_view`, `pass_state`, `pass_instance`, `photo` and `photo_review`, and a
+package that declares one of them a second time is refused by the collision check.
 ```
 
 Describe the package with a `SchemaDefinition` and announce it through an

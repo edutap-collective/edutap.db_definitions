@@ -30,3 +30,10 @@
 - New optional `SchemaDefinition.version_table_schema` field, required only
   when a package holds tables in more than one schema and sets
   `version_table`.
+- Two tables join the contract schema: `public.photo`, one immutable row per
+  uploaded version of a person's photograph, and `public.photo_review`, the
+  append-only trail of every transition. `edutap.image_service` is their only
+  writer; several packages read them, which is what puts them in `public`.
+  "At most one active version per person" is held by a partial unique index
+  rather than by the writing service, because two reviewers approving in the
+  same second is what a worked queue produces.
