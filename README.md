@@ -4,9 +4,19 @@ Declares the **contract schema** `public` and generates the SQL that defines an
 eduTAP deployment's database schema — its own tables plus those the installed eduTAP
 packages announce.
 
-The **commands** are a development-time helper, never a deployed service: they run
-where the wanted eduTAP packages are installed and emit SQL files, and there is no
-image in any stack and no `Dockerfile`.
+The **commands** run where the wanted eduTAP packages are installed, and that is the
+whole mechanism: the schema they render is a function of the versions present. They
+serve two audiences — a developer preparing and reviewing a change, and a **migration
+container that runs once per deploy** and then exits.
+
+```{note}
+This package once stated it would never be deployed and carry no `Dockerfile`. That
+changed on 2026-08-11: rendering on one machine and applying on another silently
+assumes both have the same package versions, and nothing enforced it. The container
+closes that gap by construction. It **adds only** — a diff that drops anything fails
+the deploy instead. See
+[the design record](docs/superpowers/specs/2026-08-11-migration-container-design.md).
+```
 
 The **declarations** are different. `person_view`, `pass_state` and `pass_instance`
 are imported at runtime by the services that read and write them, so the core install

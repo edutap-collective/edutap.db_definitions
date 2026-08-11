@@ -13,8 +13,26 @@ German still produces English artefacts here.
 
 ## What this package is
 
-A development-time tool that renders the SQL schema of the installed eduTAP packages.
-It has no runtime role, no image and no `Dockerfile`.
+A tool that renders the SQL schema of the installed eduTAP packages, and applies it
+where it is allowed to. It serves a developer preparing a change and a **migration
+container that runs once per deploy** and exits.
+
+**It may add and may not take away.** A diff containing `DROP TABLE`, `DROP COLUMN`,
+`DROP CONSTRAINT` or `DROP INDEX` must end the run with a non-zero status, not be
+applied around — `render_diff` already classifies these. An additive change that goes
+wrong leaves a table that already exists; a destructive one deletes something that is
+not coming back, and no deploy at three in the morning gets to decide that.
+
+Note that a **rename renders as drop + add** and therefore stops the deploy. That is
+the correct outcome, and it will still surprise someone.
+
+```{note}
+Until 2026-08-11 this package stated it had no runtime role, no image and no
+`Dockerfile`. The reason it gave was sound; the reason it missed was that rendering on
+one machine and applying on another assumes both hold the same package versions.
+[The design record](docs/superpowers/specs/2026-08-11-migration-container-design.md)
+carries the argument and the limits.
+```
 
 ## Guard rails
 
