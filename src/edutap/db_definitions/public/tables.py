@@ -56,6 +56,25 @@ class PersonView(Base, table=True):
     __tablename__ = "person_view"
     __table_args__ = (
         sa.Index("ix_person_view_view_type", "view_type"),
+        # The one lookup this table has that is not by primary key.
+        #
+        # A spooler writes a row from a source record it read somewhere -- for the LMU
+        # spooler a directory DN -- and keeps that identifier inside `data`. When the
+        # source record disappears, the identifier is all the spooler has left: the uid
+        # was derived from attributes of the very record that is now gone, so the row
+        # cannot be found by key. Without this index every such deletion is a
+        # sequential scan of the whole table.
+        #
+        # Composite, and in this order, because the delete filters on both: the view
+        # type is the selective prefix, and the extracted key follows. `source_dn` is
+        # named as one possible convention rather than a column, which is why this is a
+        # functional index on the payload -- another site's spooler may key on
+        # something else and simply not use it.
+        sa.Index(
+            "ix_person_view_source_dn",
+            "view_type",
+            sa.text("(data ->> 'source_dn')"),
+        ),
         # Declared, not inherited: `search_path` would otherwise decide, and it
         # resolves differently per deployment (see tests).
         {"schema": "public"},

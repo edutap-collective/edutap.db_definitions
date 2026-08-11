@@ -16,7 +16,9 @@ side now.
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.schema import CreateIndex
 
 from edutap.db_definitions.definition import NAMING_CONVENTION
 from edutap.db_definitions.public import metadata
@@ -76,6 +78,29 @@ def test_person_view_indexes_view_type_for_whole_view_reads():
     table = metadata.tables["public.person_view"]
     indexed = {tuple(column.name for column in index.columns) for index in table.indexes}
     assert ("view_type",) in indexed
+
+
+def test_person_view_indexes_the_source_identifier_a_spooler_deletes_by():
+    """The one lookup on this table that is not by primary key.
+
+    A spooler that loses its source record cannot find the row by key: the uid was
+    derived from attributes of the record that just disappeared. It searches by the
+    identifier it kept in `data` instead, and without an index that is a sequential
+    scan of the whole table on every deletion.
+
+    Rendered rather than inspected, because a functional index over a JSONB key is not
+    a column and `index.columns` does not show it -- asserting on the metadata alone
+    would pass while the SQL says something else.
+    """
+    table = metadata.tables["public.person_view"]
+    by_name = {index.name: index for index in table.indexes}
+    assert "ix_person_view_source_dn" in by_name
+
+    statement = CreateIndex(by_name["ix_person_view_source_dn"])
+    rendered = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "view_type" in rendered
+    assert "data ->> 'source_dn'" in rendered
 
 
 def test_person_view_deliberately_has_no_watermark():
