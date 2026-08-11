@@ -1,8 +1,9 @@
-"""The three tables of the contract schema `public`.
+"""The tables of the contract schema `public`.
 
 They live here rather than with a service because more than one service touches
 them: the pass-state consumer writes `pass_state` and `pass_instance`, a person
-spooler writes `person_view`, and `edutap.data_provider` reads all three. Declaring
+spooler writes `person_view`, `edutap.image_service` writes `photo` and
+`photo_review`, and `edutap.data_provider` reads across them. Declaring
 them in the reader was the anomaly this package corrects -- ownership follows the
 schema, and `public` belongs to nobody in particular.
 
@@ -12,6 +13,7 @@ tables through an entry point, as before; only the contract schema moved.
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from edutap.data_models.vocabulary import (
@@ -245,3 +247,214 @@ class PassInstance(Base, table=True):
     )
     created_at: datetime = Field(default_factory=_utcnow, sa_column=_timestamp())
     updated_at: datetime = Field(default_factory=_utcnow, sa_column=_timestamp(on_update=True))
+
+
+class Photo(Base, table=True):
+    """One photograph of one person, as the system keeps it.
+
+    A row is a version: the sanitised raw image plus its crop, immutable once
+    written. A new upload is a new row; the history is kept because a deployment
+    that has to evidence every photograph it accepted cannot hold only the current
+    one.
+
+    Written by `edutap.image_service` alone. It is read by more than one consumer --
+    a data provider, a pass builder, at some deployments a vendor connector reading
+    SQL directly -- which is what puts the table here rather than in a schema of its
+    own.
+    """
+
+    __tablename__ = "photo"
+    __table_args__ = (
+        # The invariant "at most one active version per person", held by the
+        # database rather than by the service. Two reviewers approving different
+        # versions in the same second is what a worked queue produces, and an
+        # application-level check loses that race by construction.
+        sa.Index(
+            "uq_photo_one_active_per_person",
+            "person_uid",
+            unique=True,
+            postgresql_where=sa.text("state = 'active'"),
+        ),
+        # The retention run's query: rejected rows past their deadline.
+        sa.Index("ix_photo_state_notified_at", "state", "notified_at"),
+        {"schema": "public"},
+    )
+
+    person_uid: str = Field(
+        sa_column=sa.Column(sa.String(64, collation="C"), primary_key=True),
+        description=(
+            "Person identifier, uniquely determinable by the institution. Never "
+            "interpreted here. Byte collation so comparison and index order do not "
+            "depend on a locale."
+        ),
+    )
+    version: str = Field(
+        sa_column=sa.Column(sa.String(64, collation="C"), primary_key=True),
+        description=(
+            "Opaque, sortable upload generation (UUIDv7). Appears in the object path "
+            "and in the published reference; interpreted by no one but the writer."
+        ),
+    )
+    state: str = Field(
+        sa_column=sa.Column(sa.String(32), nullable=False),
+        description=(
+            "`pending` | `active` | `rejected` | `superseded`. Text, not a native "
+            "enum: a new state must not force a migration."
+        ),
+    )
+    sha256: str = Field(
+        sa_column=sa.Column(sa.CHAR(64), nullable=False),
+        description=(
+            "Of the sanitised image, not of the uploaded file. The claim recorded is "
+            "'this image was reviewed', not 'this file was uploaded' -- metadata is "
+            "stripped on the way in, so the two differ."
+        ),
+    )
+    evidence_kind: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(32), nullable=True),
+        description=(
+            "`support_visual` | `id_document` | `eudi_pid`. Null while `pending`: a "
+            "version carries evidence once reviewed, and reaches `active` only then."
+        ),
+    )
+    photo_assurance: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(128), nullable=True),
+        description=(
+            "Assurance of the photograph's provenance, derived from `evidence_kind`. "
+            "A statement about the image, not about the person -- a credential "
+            "combines it with the person's own value rather than replacing it."
+        ),
+    )
+    recipe: str = Field(
+        sa_column=sa.Column(sa.String(64), nullable=False),
+        description="Which variant manifest rendered this version's derivatives.",
+    )
+    rights_declared_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=_timestamp(),
+        description=(
+            "When the uploader declared they hold the rights to the image. That "
+            "declaration is what carries legal weight; copyright metadata found in "
+            "the upload is recorded in the review trail and never evaluated."
+        ),
+    )
+    notified_at: datetime | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True),
+        description=(
+            "When the person was told of a rejection. The retention clock runs from "
+            "here, not from the rejection: someone away for three weeks would "
+            "otherwise lose the image before learning it was refused."
+        ),
+    )
+    legal_hold_since: datetime | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True),
+        description=(
+            "Present means held, and every deletion path skips the row. A timestamp "
+            "rather than a flag because it also says since when. Orthogonal to "
+            "`state`: a suspicion can strike a version in any of them."
+        ),
+    )
+    legal_hold_by: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(128), nullable=True),
+        description="Who placed the hold. Releasing it is a narrower right than placing it.",
+    )
+    legal_hold_reason: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.Text, nullable=True),
+        description="Why it was placed, in the words of whoever placed it.",
+    )
+    purged_at: datetime | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True),
+        description=(
+            "Bytes gone, row kept. Deleting the row instead would take the review "
+            "trail with it through the cascade -- which is the evidence being kept."
+        ),
+    )
+    created_at: datetime = Field(default_factory=_utcnow, sa_column=_timestamp())
+    updated_at: datetime = Field(default_factory=_utcnow, sa_column=_timestamp(on_update=True))
+
+
+class PhotoReview(Base, table=True):
+    """One transition of one photograph, appended and never changed.
+
+    Every step writes a row: the submission, the approval, the rejection, a
+    reactivation, placing and releasing a legal hold, a purge, an expiry. A mistaken
+    entry is corrected by a further entry rather than by rewriting the earlier one,
+    which is what makes the sequence usable as evidence.
+
+    It outlives the image but not the person: purging clears the bytes and keeps the
+    row, while deleting the person removes the `photo` row and takes the trail with
+    it through the cascade.
+    """
+
+    __tablename__ = "photo_review"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["person_uid", "version"],
+            ["public.photo.person_uid", "public.photo.version"],
+            ondelete="CASCADE",
+        ),
+        sa.Index("ix_photo_review_person_uid", "person_uid"),
+        {"schema": "public"},
+    )
+
+    review_id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=sa.Column(sa.Uuid(), primary_key=True),
+        description="One row per transition, so the key cannot be the version.",
+    )
+    person_uid: str = Field(
+        sa_column=sa.Column(sa.String(64, collation="C"), nullable=False),
+        description="Together with `version`, the photograph this concerns.",
+    )
+    version: str = Field(
+        sa_column=sa.Column(sa.String(64, collation="C"), nullable=False),
+        description="The version this concerns.",
+    )
+    occurred_at: datetime = Field(default_factory=_utcnow, sa_column=_timestamp())
+    actor: str = Field(
+        sa_column=sa.Column(sa.String(128), nullable=False),
+        description=(
+            "Who acted. Stored as the calling service hands it over -- this package "
+            "declares the column, it does not authenticate anyone."
+        ),
+    )
+    action: str = Field(
+        sa_column=sa.Column(sa.String(32), nullable=False),
+        description=(
+            "`submit` | `approve` | `reject` | `reactivate` | `hold_set` | "
+            "`hold_release` | `purge` | `expire`. Text for the same reason as `state`."
+        ),
+    )
+    evidence_kind: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(32), nullable=True),
+        description="Set on `approve`, null on every other action.",
+    )
+    reason: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.Text, nullable=True),
+        description="Free text, required by the writer on a rejection.",
+    )
+    sha256: str = Field(
+        sa_column=sa.Column(sa.CHAR(64), nullable=False),
+        description=(
+            "Repeated from the photograph on purpose: after a purge the entry would "
+            "otherwise say that a photo was refused without being able to say which."
+        ),
+    )
+    details: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=sa.Column(JSONB, nullable=False),
+        description=(
+            "What the reviewer was shown: the validation report summary, and any "
+            "copyright claim found in the upload's metadata. JSONB rather than "
+            "columns, because what is shown will grow and nobody queries by it."
+        ),
+    )

@@ -10,11 +10,13 @@ from edutap.db_definitions.public import NAME, VERSION_TABLE, definition
 from .conftest import make_definition
 
 
-def test_it_declares_the_three_contract_tables():
+def test_it_declares_the_contract_tables():
     assert definition.table_names == (
         "public.pass_instance",
         "public.pass_state",
         "public.person_view",
+        "public.photo",
+        "public.photo_review",
     )
 
 
