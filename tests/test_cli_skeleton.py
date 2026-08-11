@@ -26,7 +26,7 @@ def test_commands_is_derived_from_the_parser():
     """
     from edutap.db_definitions.cli import COMMANDS
 
-    assert COMMANDS == ("create", "diff", "check", "apply")
+    assert COMMANDS == ("create", "diff", "check", "apply", "migrate")
 
 
 def test_main_returns_two_on_missing_subcommand():

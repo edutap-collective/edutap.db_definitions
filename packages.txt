@@ -1,0 +1,9 @@
+# eduTAP packages whose schemas this image should collect, one requirement per line.
+#
+# Empty by default: the contract schema declared in this package is then all there is
+# to migrate. A deployment adds what it runs -- for the LMU estate that is the pass
+# builder and the Apple VAS services, each a PEP 508 direct reference to a tag.
+#
+# Pinned to tags, never to a branch. What this file lists decides what the migration
+# knows about, so a branch reference would let somebody else's merge change a
+# production schema without a line changing here.

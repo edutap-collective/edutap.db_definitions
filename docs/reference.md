@@ -176,6 +176,70 @@ only — `BEGIN`, `COMMIT`, `SET ROLE`, and comments are not counted.
 With `--dry-run` it still reads `FILE`, but does not open a database
 connection; it prints `Dry run, nothing executed.` and exits `0`.
 
+### `migrate`
+
+Renders the diff, decides on it, and applies it — the one command the
+migration container runs. Unlike `diff` followed by `apply` there is no file
+in between, and therefore no window in which the database can change between
+being read and being written.
+
+```text
+edutap-dbdef migrate [--packages LIST] [--exclude LIST] [--ddl-role ROLE] [--dry-run]
+```
+
+**It may add and may not take away.** A diff that only adds is applied; a diff
+containing `DROP TABLE`, `DROP COLUMN`, `DROP CONSTRAINT` or `DROP INDEX` is
+refused, nothing is applied, and the run exits `3`.
+
+| Situation | Exit | Output |
+|---|---|---|
+| Database matches the definitions | `0` | `Schema is in sync with the definitions; nothing to do.` |
+| Only additive changes | `0` | `Applied <N> statement(s).` followed by each statement |
+| Anything destructive | `3` | the refused statements, in full, on standard error |
+| `--dry-run` | `0` | `Dry run: <N> statement(s) would be applied.` |
+| Database unreachable, contract violated | `1` | the error |
+
+Exit `3` is its own code rather than `1`, because a deploy that stops here has
+not found something broken — it has found a change that a person has to look
+at, and telling the two apart decides whether somebody gets paged.
+
+The refusal prints the statements themselves, not a count. Whoever reads it is
+looking at a red deploy in a log window, without the file.
+
+```{warning}
+**The rule catches `DROP`, and only `DROP`.** A **type change is applied, not
+refused** — `ALTER COLUMN ... TYPE` carries no destructive marker, and
+narrowing a type can lose data as thoroughly as dropping a column. Measured on
+2026-08-11 and pinned by a test, so that a future change to the classification
+has to come past it.
+
+If a type change is in the diff, it belongs in a reviewed SQL step, not in a
+deploy.
+```
+
+```{note}
+A **rename renders as drop + add**, so renaming a column or table stops the
+deploy and has to be applied deliberately. That is the intended outcome of the
+rule, and it will still surprise someone.
+
+`CREATE INDEX` counts as additive and takes a write lock for the duration of
+the build. On a table that is already large this is an outage;
+`CREATE INDEX CONCURRENTLY` cannot run inside the transaction the document
+wraps everything in, so such an index is a change to prepare by hand.
+
+One drop refuses the **whole** diff, including its additive half. A deploy that
+applied what it could and then stopped would leave the schema in a state
+neither set of declarations describes, and the next run would diff against
+that.
+```
+
+While it runs, `migrate` holds a session-scoped PostgreSQL advisory lock, so
+two concurrent runs cannot interleave. The lock covers **rendering and
+applying** together: the renderer reflects the database to decide what is
+missing, and the statements it emits carry no `IF NOT EXISTS`, so a second run
+that has already concluded "this table is absent" would fail a deploy that was
+correct.
+
 (ddl-role)=
 
 ## The `--ddl-role` header
@@ -208,8 +272,8 @@ split are somebody else's job — see the {ref}`note in the how-to guide
 
 ## Connection settings
 
-Only `diff`, `check`, and `apply` read connection settings; `create` never
-connects.
+Only `diff`, `check`, `apply` and `migrate` read connection settings; `create`
+never connects.
 Every setting has a prefixed name and, for most, a standard `PG*` alias; the
 prefixed name takes precedence when both are set.
 
