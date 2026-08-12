@@ -19,7 +19,7 @@ dependencies = [
     # PEP 508 direct reference: public but not published to a public index. Pinned to
     # a tag, never to a branch -- a branch reference lets somebody else's merge change
     # this package's build without a line changing here.
-    "edutap.data_models @ git+https://github.com/edutap-collective/edutap.data_models@v0.2.0",
+    "edutap.data_models @ git+https://github.com/edutap-collective/edutap.data_models@v0.2.1",
     "sqlalchemy>=2.0",
     "sqlmodel>=0.0.22",
 ]
