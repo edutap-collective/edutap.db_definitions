@@ -3,6 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Callable, so the release workflow runs *these* checks rather than its own copy.
+  # A release gate that drifts from CI is a gate that passes what CI would have
+  # stopped -- and it drifts silently, because nobody reads two files side by side.
+  workflow_call:
 
 # Every job installs into a virtualenv rather than with `uv pip install --system`.
 # The difference is not cosmetic: `setup-uv` with `python-version` installs a
