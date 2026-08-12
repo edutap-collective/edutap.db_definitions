@@ -4,22 +4,43 @@ build-backend = "hatchling.build"
 
 [project]
 name = "edutap.db_definitions"
-version = "0.1.1"
+# 0.1.6, not 0.1.2: this field had read 0.1.1 since at least the v0.1.3 tag and did
+# not follow the tags at all. That was invisible while releases were git tags -- a
+# consumer pinned `@v0.1.5` and got what that tag held, whatever the metadata claimed.
+# PyPI reads the metadata, so the number has to become true, and it has to start above
+# the highest tag rather than re-issue a version that already means something else.
+version = "0.1.6"
 description = "Generates the database schema SQL for an eduTAP deployment from the installed eduTAP packages"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "EUPL-1.2"
 authors = [{ name = "eduTAP" }]
+# No `License ::` classifier: `license` above is a PEP 639 SPDX expression, and the
+# two together are rejected by the build backend rather than merely redundant.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 # The core is what a declaration needs and nothing more. Since this package began
 # declaring the contract schema itself, importing it is no longer only a developer's
 # business -- `edutap.data_provider` imports the tables from here at runtime -- and a
 # reader of a database has no use for a migration engine or a synchronous driver.
 # Those moved to the `cli` extra, which is what the `edutap-dbdef` command needs.
 dependencies = [
-    # PEP 508 direct reference: public but not published to a public index. Pinned to
-    # a tag, never to a branch -- a branch reference lets somebody else's merge change
-    # this package's build without a line changing here.
-    "edutap.data_models @ git+https://github.com/edutap-collective/edutap.data_models@v0.2.0",
+    # A range, not a pinned git reference. A PEP 508 direct reference cannot carry a
+    # version specifier -- the grammar makes URL and range mutually exclusive -- so the
+    # tag that stood here was not a strict choice but the only expressible one, and it
+    # made this package a link in a chain: two different tags for one name are two
+    # identities, and no resolver reconciles them.
+    #
+    # Upper bound at the next minor because this package builds on the message and
+    # settings contract directly; a 0.x minor is where that may change shape.
+    "edutap.data_models>=0.2.1,<0.3",
     "sqlalchemy>=2.0",
     "sqlmodel>=0.0.22",
 ]
@@ -65,10 +86,13 @@ pass_builder = ["edutap.pass_builder"]
 [project.scripts]
 edutap-dbdef = "edutap.db_definitions.cli:run"
 
-[tool.hatch.metadata]
-# edutap.data_models is a PEP 508 direct reference, and hatchling refuses those
-# unless a package says it means it.
-allow-direct-references = true
+# `[tool.hatch.metadata] allow-direct-references` is gone with the reason it was added
+# for: edutap.data_models was the only direct reference here, and it is a range now.
+# Not left standing as a harmless leftover -- PyPI refuses a distribution whose
+# metadata carries a direct reference, so with the flag still set a future `pkg @
+# git+...` would build cleanly, pass CI, and fail at upload with a message about
+# metadata rather than about the line somebody wrote. Without it, hatchling refuses at
+# build time, where the mistake is.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/edutap"]
