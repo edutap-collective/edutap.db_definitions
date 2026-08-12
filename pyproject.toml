@@ -9,7 +9,7 @@ name = "edutap.db_definitions"
 # consumer pinned `@v0.1.5` and got what that tag held, whatever the metadata claimed.
 # PyPI reads the metadata, so the number has to become true, and it has to start above
 # the highest tag rather than re-issue a version that already means something else.
-version = "0.1.6"
+version = "0.2.0"
 description = "Generates the database schema SQL for an eduTAP deployment from the installed eduTAP packages"
 readme = "README.md"
 requires-python = ">=3.13"
