@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.1 (unreleased)
+
+- `public.photo` gains the state `draft`: a version uploaded but not yet
+  confirmed by its owner. No reviewer sees it and no row in
+  `public.photo_review` mentions it. The column stays `varchar`, which is what
+  its own description promised — a new state must not force a migration.
+- New partial unique index `uq_photo_one_draft_per_person`, holding "at most one
+  candidate per person" the same way `uq_photo_one_active_per_person` holds "at
+  most one active version". The writing service clears a previous candidate
+  before inserting the next, but a person with two tabs open is a race, and an
+  application-level check loses it by construction.
+- New nullable column `public.photo.draft_details`. The validation report is
+  produced when a file is uploaded and belongs in the review entry, which is
+  written when its owner confirms — two different requests, so it has to wait
+  somewhere that is not process memory. It moves into the entry on confirmation
+  and is cleared, because one report in two places is how the two come apart.
+- `public.photo.rights_declared_at` becomes nullable. The rights declaration is
+  made when the person confirms the candidate they were shown, not when the
+  bytes arrive, so a candidate they discard never carried one. Previously the
+  column was `NOT NULL` with a default, which would have dated a declaration
+  nobody had made yet.
+
 ## 0.1.0 (unreleased)
 
 - Initial release: `create`, `diff`, `check` and `apply` over the
