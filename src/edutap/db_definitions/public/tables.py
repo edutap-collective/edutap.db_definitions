@@ -275,6 +275,16 @@ class Photo(Base, table=True):
             unique=True,
             postgresql_where=sa.text("state = 'active'"),
         ),
+        # "At most one candidate per person", by the same argument. The writing
+        # service clears a previous candidate before inserting the next, but a
+        # person with two tabs open is a race, and an application-level check
+        # loses it by construction.
+        sa.Index(
+            "uq_photo_one_draft_per_person",
+            "person_uid",
+            unique=True,
+            postgresql_where=sa.text("state = 'draft'"),
+        ),
         # The retention run's query: rejected rows past their deadline.
         sa.Index("ix_photo_state_notified_at", "state", "notified_at"),
         {"schema": "public"},
@@ -298,8 +308,10 @@ class Photo(Base, table=True):
     state: str = Field(
         sa_column=sa.Column(sa.String(32), nullable=False),
         description=(
-            "`pending` | `active` | `rejected` | `superseded`. Text, not a native "
-            "enum: a new state must not force a migration."
+            "`draft` | `pending` | `active` | `rejected` | `superseded`. Text, not a "
+            "native enum: a new state must not force a migration -- which is what "
+            "`draft` demonstrated. A `draft` is uploaded and not yet confirmed by "
+            "its owner: no reviewer sees it and no trail entry mentions it."
         ),
     )
     sha256: str = Field(
@@ -331,13 +343,26 @@ class Photo(Base, table=True):
         sa_column=sa.Column(sa.String(64), nullable=False),
         description="Which variant manifest rendered this version's derivatives.",
     )
-    rights_declared_at: datetime = Field(
-        default_factory=_utcnow,
-        sa_column=_timestamp(),
+    draft_details: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=sa.Column(JSONB, nullable=True),
+        description=(
+            "The validation report and any rights claims found in the upload, held "
+            "only while the version is a `draft`. Produced at upload and belonging "
+            "in the review entry, which is written at confirmation -- and the two "
+            "are different requests. Moved into that entry and cleared here, "
+            "because one report in two places is how the two come apart."
+        ),
+    )
+    rights_declared_at: datetime | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True),
         description=(
             "When the uploader declared they hold the rights to the image. That "
             "declaration is what carries legal weight; copyright metadata found in "
-            "the upload is recorded in the review trail and never evaluated."
+            "the upload is recorded in the review trail and never evaluated. Null "
+            "while the version is a `draft`: the declaration is made when its owner "
+            "confirms what they see, so a candidate they discard never carried one."
         ),
     )
     notified_at: datetime | None = Field(
