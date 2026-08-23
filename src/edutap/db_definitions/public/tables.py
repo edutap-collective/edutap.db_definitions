@@ -178,6 +178,34 @@ class PassState(Base, table=True):
         sa_column=sa.Column(sa.String(64), nullable=True),
         description="Variant key; empty means the default variant, modelled as is_default there.",
     )
+    issuing_service: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(64), nullable=True),
+        description=(
+            "Which service issued this pass, from the edutap-producer header. Written "
+            "once and only by an edutap-action of `create`: every other action has a "
+            "different producer -- a scheduler, the template manager -- and filling a "
+            "NULL from one of those would record the last writer as the issuer. Text, "
+            "not a native enum, for the reason wallet_type gives. Null means not "
+            "recorded, which is the truth for every row written before the column "
+            "existed and for a row a report created without a preceding command."
+        ),
+    )
+    schac_home_organization: str | None = Field(
+        default=None,
+        sa_column=sa.Column(sa.String(64), nullable=True),
+        description=(
+            "Which institution the holder belonged to at issuance, as the SCHAC "
+            "attribute of that name -- a domain such as `lmu.de`, never a display "
+            "name. Same name as in person_view.data on purpose: one concept, one "
+            "name. A snapshot, never corrected afterwards, so a person changing "
+            "institution does not move every pass ever issued to them. It comes from "
+            "the create payload, set by the producer from its authenticated session; "
+            "person_view is not present in every deployment and cannot serve as the "
+            "source. Written once, by `create` alone, for the reason above -- a "
+            "scheduled update has no authenticated person and cannot know the value."
+        ),
+    )
     provider_raw: dict[str, Any] | None = Field(
         default=None,
         sa_column=sa.Column(JSONB, nullable=True),

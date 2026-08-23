@@ -2,6 +2,16 @@
 
 ## 0.2.1 (unreleased)
 
+- `public.pass_state` gains `issuing_service` and `schac_home_organization`, so a
+  report can break issued passes down by the service that issued them and by the
+  institution they were issued on behalf of. Both `varchar(64)` and nullable: rows
+  already exist, and null says "not recorded for this row" rather than asserting
+  something nobody checked. Written once, and only by an `edutap-action` of
+  `create` -- every other action has a different producer, and a scheduled update
+  has no authenticated person. The reasoning is in
+  [the design record](docs/superpowers/specs/2026-08-23-issuer-columns-design.md);
+  the issuing *authority* deliberately gets no column, because exactly one is
+  active per deployment.
 - `public.photo` gains the state `draft`: a version uploaded but not yet
   confirmed by its owner. No reviewer sees it and no row in
   `public.photo_review` mentions it. The column stays `varchar`, which is what
