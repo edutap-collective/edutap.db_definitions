@@ -186,6 +186,75 @@ def test_variant_is_optional_because_a_default_exists():
     assert metadata.tables["public.pass_state"].columns["pass_template_variant"].nullable
 
 
+def test_pass_state_records_both_issuer_axes():
+    """Who issued the pass, and whose member the holder was when it was issued.
+
+    Two axes rather than one: a report breaks issued passes down by the service
+    that issued them and by the institution they were issued on behalf of. The
+    issuing *authority* is deliberately not a third column -- exactly one is
+    active per deployment, so the value would be constant per database.
+    """
+    columns = metadata.tables["public.pass_state"].columns
+    assert "issuing_service" in columns
+    assert "schac_home_organization" in columns
+    assert "issuing_authority" not in columns
+
+
+def test_issuer_columns_are_nullable_because_rows_already_exist():
+    """Null says "not recorded for this row", which is the truth in three cases.
+
+    Everything written before the columns existed; a row a state report created
+    without a preceding command; and a deployment whose producers do not send the
+    value. A `NOT NULL` column without a default cannot be added to a populated
+    table at all, and a server default would write an assertion into every
+    existing row that nobody checked.
+    """
+    columns = metadata.tables["public.pass_state"].columns
+    for name in ("issuing_service", "schac_home_organization"):
+        assert columns[name].nullable
+        assert columns[name].server_default is None
+
+
+def test_issuer_columns_are_text_and_wide_enough_for_a_service_name():
+    """64 like `pass_template`, not 32 like the vocabulary columns.
+
+    `apple_wallet_vas_web_service` is 28 characters and the next name may be
+    longer; a home organization is a domain. Text rather than a native enum for
+    the reason `wallet_type` states in its own description.
+    """
+    columns = metadata.tables["public.pass_state"].columns
+    for name in ("issuing_service", "schac_home_organization"):
+        assert isinstance(columns[name].type, sa.String)
+        assert not isinstance(columns[name].type, sa.Enum)
+        assert columns[name].type.length == 64
+
+
+def test_issuer_columns_are_not_indexed():
+    """The reporting reads are grouped aggregates over the whole table.
+
+    No index on a low-cardinality column improves those. The indexes this table
+    does carry serve point lookups, which these are not.
+    """
+    table = metadata.tables["public.pass_state"]
+    indexed = {column.name for index in table.indexes for column in index.columns}
+    assert "issuing_service" not in indexed
+    assert "schac_home_organization" not in indexed
+
+
+def test_home_organization_shares_its_name_with_the_person_view_payload():
+    """One concept, one name -- and the prefix fixes the value range.
+
+    `lmu_edutap_full_view` writes `schac_home_organization` into
+    `person_view.data` already, holding a domain such as `lmu.de`. A column
+    called `home_institution` would invite a display name, and the report would
+    then show `lmu.de` and `LMU Muenchen` as two organizations. A rename renders
+    as drop + add here and stops the deploy, so the name has to be right now.
+    """
+    columns = metadata.tables["public.pass_state"].columns
+    assert "home_institution" not in columns
+    assert "home_organization" not in columns
+
+
 def test_pass_instance_is_keyed_by_pass_and_platform_reference():
     """instance_ref is what the platform calls this exemplar.
 
@@ -234,6 +303,8 @@ def test_models_are_usable_as_python_objects():
         last_event_at=datetime.now(UTC),
     )
     assert state.pass_template_variant is None
+    assert state.issuing_service is None
+    assert state.schac_home_organization is None
 
 
 def test_the_python_side_default_is_timezone_aware():
