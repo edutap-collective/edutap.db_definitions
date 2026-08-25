@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 (unreleased)
+## 0.2.2 (unreleased)
 
 - `public.pass_state` gains `issuing_service` and `schac_home_organization`, so a
   report can break issued passes down by the service that issued them and by the
@@ -12,6 +12,9 @@
   [the design record](docs/superpowers/specs/2026-08-23-issuer-columns-design.md);
   the issuing *authority* deliberately gets no column, because exactly one is
   active per deployment.
+
+## 0.2.1
+
 - `public.photo` gains the state `draft`: a version uploaded but not yet
   confirmed by its owner. No reviewer sees it and no row in
   `public.photo_review` mentions it. The column stays `varchar`, which is what
