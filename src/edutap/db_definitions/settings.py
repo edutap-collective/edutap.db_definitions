@@ -77,7 +77,28 @@ class ClusterSettings(BaseSettings):
     themselves; :class:`Settings` below does.
     """
 
-    model_config = SettingsConfigDict(extra="ignore")
+    #: ``EDUTAP_DB_``, and the name follows the package rather than any consumer.
+    #:
+    #: This class is shared, so a prefix naming one of its users would force every
+    #: other user into a subclass whose only content is a different prefix. That is
+    #: exactly what happened to the sibling directory settings: they carry
+    #: ``LMU_EDUTAP_VZD_LDAP_``, and the pass backend needed a subclass for no other
+    #: reason than to rename it.
+    #:
+    #: ``EDUTAP_`` and not ``LMU_EDUTAP_``: this package is vendor neutral and is
+    #: meant to run at another institution. Same shape as ``EDUTAP_KAFKA_`` in
+    #: ``edutap.data_models``.
+    #:
+    #: A subclass may still override it, and two do today -- a service with a
+    #: database of its own is a different thing from a service sharing this one.
+    #: What the prefix removes is the obligation to.
+    #:
+    #: :class:`Settings` below is unaffected either way: every one of its fields
+    #: carries an explicit ``validation_alias``, and an alias wins over a prefix.
+    #: Verified before this line was written -- the migration tool gates every
+    #: deploy, and a settings change that quietly renamed its variables would fail
+    #: there first and loudest.
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="EDUTAP_DB_")
 
     #: Every node of the cluster, comma separated, each optionally with its own port:
     #: ``pg-a,pg-b:5433,pg-c``. Entries without a port get :attr:`port`.
