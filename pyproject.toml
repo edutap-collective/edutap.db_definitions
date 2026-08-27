@@ -9,7 +9,7 @@ name = "edutap.db_definitions"
 # consumer pinned `@v0.1.5` and got what that tag held, whatever the metadata claimed.
 # PyPI reads the metadata, so the number has to become true, and it has to start above
 # the highest tag rather than re-issue a version that already means something else.
-version = "0.3.0"
+version = "0.3.1"
 description = "Generates the database schema SQL for an eduTAP deployment from the installed eduTAP packages"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -40,7 +40,16 @@ dependencies = [
     #
     # Upper bound at the next minor because this package builds on the message and
     # settings contract directly; a 0.x minor is where that may change shape.
-    "edutap.data_models>=0.2.1,<0.3",
+    # Obergrenze bei der uebernaechsten Minor, nicht bei der naechsten. Dieses
+    # Paket benutzt aus `data_models` NUR das Vokabular -- vier Enums in
+    # `public/tables.py` --, und die sind ueber 0.2 und 0.3 unveraendert.
+    #
+    # Die enge Grenze hatte eine Wirkung, die niemand wollte: `data_models` 0.3.0
+    # bringt `PassCommand`, den Rumpfvertrag von `pass-command/v1`. Ein Dienst, der
+    # den liest UND diese Tabellen schreibt -- also der Pass-State-Consumer, wofuer
+    # beide Pakete gedacht sind -- konnte beide nicht zugleich haben. Dieselbe
+    # Verklemmung hatte `edutap.observability_settings` am 2026-08-25.
+    "edutap.data_models>=0.2.1,<0.4",
     "sqlalchemy>=2.0",
     "sqlmodel>=0.0.22",
 ]
