@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.2
+
+- `ClusterSettings` declares `secrets_dir="/run/secrets"`, so the password arrives
+  as a mounted Docker secret rather than an environment variable — the file name
+  carries the prefix, `EDUTAP_DB_password`. It was every consumer's job before, and
+  that is exactly how it went wrong: the VZD spooler declared it, the pass-state
+  consumer and the pass backend did not, and both crash-looped on a deploy with
+  `password: Field required` while the file sat mounted next to them (2026-08-27).
+  Every service reaching this database takes its password this way, so the default
+  belongs here — the same reasoning that moved the prefix. A missing directory
+  stays harmless: pydantic-settings warns and falls back to the environment.
+
+## 0.3.1
+
+- Allow `edutap.data_models` 0.3.
+
+## 0.3.0
+
+- `ClusterSettings` reads `EDUTAP_DB_` by default. It read nothing before — each
+  consumer declared its own prefix, and a shared class carrying one consumer's name
+  forced every further one into a subclass whose entire content was a different
+  name.
+
 ## 0.2.2 (unreleased)
 
 - `public.pass_state` gains `issuing_service` and `schac_home_organization`, so a

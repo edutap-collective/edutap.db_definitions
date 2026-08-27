@@ -98,7 +98,30 @@ class ClusterSettings(BaseSettings):
     #: Verified before this line was written -- the migration tool gates every
     #: deploy, and a settings change that quietly renamed its variables would fail
     #: there first and loudest.
-    model_config = SettingsConfigDict(extra="ignore", env_prefix="EDUTAP_DB_")
+    #: ``secrets_dir`` is what lets the password arrive as a mounted file rather
+    #: than an environment variable -- ``docker service inspect`` prints those to
+    #: everyone allowed to run it, and an error tracker collects them out of frame
+    #: locals.
+    #:
+    #: pydantic-settings HAS NO ``_FILE`` CONVENTION. It reads a secret file only
+    #: where a ``secrets_dir`` says to look, and the file name it looks for carries
+    #: the prefix: ``/run/secrets/EDUTAP_DB_password``, not ``.../password``. A
+    #: secret mounted under the bare field name is silently ignored.
+    #:
+    #: WHY IT IS HERE AND NOT IN EACH CONSUMER. It was in each consumer, and that is
+    #: exactly how it went wrong: the spooler declared it, the pass-state consumer
+    #: and the pass backend did not, and both crash-looped on a deploy with
+    #: ``password: Field required`` while the file sat mounted next to them
+    #: (2026-08-27, lrz_cc). Every service that reaches this database takes its
+    #: password as a Docker secret, so the default belongs to the shared class --
+    #: the same reasoning that moved the prefix here.
+    #:
+    #: A missing directory is harmless: pydantic-settings emits a ``UserWarning``
+    #: and falls back to the environment, so a development machine without
+    #: ``/run/secrets`` is not affected. A subclass may still override it.
+    model_config = SettingsConfigDict(
+        extra="ignore", env_prefix="EDUTAP_DB_", secrets_dir="/run/secrets"
+    )
 
     #: Every node of the cluster, comma separated, each optionally with its own port:
     #: ``pg-a,pg-b:5433,pg-c``. Entries without a port get :attr:`port`.
