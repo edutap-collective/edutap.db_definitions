@@ -15,6 +15,7 @@ defined, and the package that actually connects brings the driver.
 
 import pytest
 from pydantic import ValidationError
+from pydantic_settings import SettingsConfigDict
 from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
 from sqlalchemy.engine import make_url
 
@@ -184,3 +185,47 @@ def test_the_old_singular_variable_is_still_accepted(monkeypatch):
     monkeypatch.setenv("EDUTAP_DBDEF_HOST", "from-the-old-name")
 
     assert make_url(Settings().url()).host == "from-the-old-name"
+
+
+def test_the_prefix_names_the_package_not_a_consumer(monkeypatch):
+    """A shared class with a consumer's name in its prefix forces subclasses.
+
+    Every other user would need one whose only content is a different prefix --
+    which is what the sibling directory settings did to the pass backend.
+    """
+    monkeypatch.setenv("EDUTAP_DB_HOSTS", "pg-a,pg-b")
+    monkeypatch.setenv("EDUTAP_DB_DATABASE", "edutap")
+
+    read = ClusterSettings(_env_file=None)
+
+    assert read.hosts == "pg-a,pg-b"
+    assert read.database == "edutap"
+
+
+def test_a_subclass_may_still_choose_its_own_prefix(monkeypatch):
+    """The prefix removes the obligation to subclass, not the possibility.
+
+    A service with a database of its own is a different thing from a service
+    sharing this one, and two consumers are in that position today.
+    """
+
+    class OwnDatabase(ClusterSettings):
+        model_config = SettingsConfigDict(extra="ignore", env_prefix="SOMETHING_ELSE_")
+
+    monkeypatch.setenv("SOMETHING_ELSE_HOSTS", "own-host")
+    monkeypatch.setenv("EDUTAP_DB_HOSTS", "shared-host")
+
+    assert OwnDatabase(_env_file=None).hosts == "own-host"
+
+
+def test_the_migration_tool_is_untouched_by_the_prefix(monkeypatch):
+    """`Settings` binds by explicit alias, and an alias wins over a prefix.
+
+    This matters more than it looks: that tool gates every deploy. A settings
+    change that quietly renamed its variables would abort the rollout before a
+    single service started, and the error would name a field rather than the
+    rename that caused it.
+    """
+    monkeypatch.setenv("EDUTAP_DBDEF_DSN", "postgresql://somewhere/edutap")
+
+    assert Settings(_env_file=None).dsn == "postgresql://somewhere/edutap"
