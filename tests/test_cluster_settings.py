@@ -229,3 +229,50 @@ def test_the_migration_tool_is_untouched_by_the_prefix(monkeypatch):
     monkeypatch.setenv("EDUTAP_DBDEF_DSN", "postgresql://somewhere/edutap")
 
     assert Settings(_env_file=None).dsn == "postgresql://somewhere/edutap"
+
+
+def test_the_password_is_read_from_a_mounted_file(tmp_path, monkeypatch):
+    """A Docker secret, not an environment variable.
+
+    `docker service inspect` prints environment variables to everyone allowed to
+    run it, and an error tracker collects them out of frame locals. The password
+    therefore arrives as a mounted file -- and pydantic-settings reads one only
+    where a `secrets_dir` says to look.
+
+    THE FILE NAME CARRIES THE PREFIX. `/run/secrets/EDUTAP_DB_password`, not
+    `.../password`: a secret mounted under the bare field name is silently
+    ignored. That silence is the whole reason this test exists.
+    """
+    (tmp_path / "EDUTAP_DB_password").write_text("from-the-file")
+
+    settings = ClusterSettings(_env_file=None, _secrets_dir=str(tmp_path))
+
+    assert settings.password.get_secret_value() == "from-the-file"
+
+
+def test_the_bare_field_name_is_not_read():
+    """The counter-check to the one above, and the failure it is guarding against.
+
+    Until 2026-08-27 `ClusterSettings` declared no `secrets_dir` at all. Each
+    consumer was expected to add one; the spooler did, the pass-state consumer and
+    the pass backend did not. Both crash-looped on a deploy with
+    `password: Field required` while the file sat mounted right next to them.
+
+    A behavioural test would not have caught it -- with no `secrets_dir` there is
+    no file to read wrongly, only one that is never read. So this asserts the
+    DECLARATION.
+    """
+    assert ClusterSettings.model_config["secrets_dir"] == "/run/secrets"
+
+
+def test_a_missing_secrets_dir_is_survivable(monkeypatch):
+    """A development machine has no /run/secrets, and must not care.
+
+    pydantic-settings emits a UserWarning and falls back to the environment. If
+    that ever became an error, every developer's first import would fail.
+    """
+    monkeypatch.setenv("EDUTAP_DB_PASSWORD", "from-the-environment")
+
+    settings = ClusterSettings(_env_file=None, _secrets_dir="/nonexistent-on-purpose")
+
+    assert settings.password.get_secret_value() == "from-the-environment"
