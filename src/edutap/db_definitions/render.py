@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from sqlalchemy import MetaData, Table, create_mock_engine
+from sqlalchemy import ForeignKeyConstraint, MetaData, Table, create_mock_engine
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import DDLElement
 
@@ -137,8 +137,36 @@ def merged_metadata(definitions: Sequence[SchemaDefinition]) -> MetaData:
     merged = MetaData(naming_convention=_shared_naming_convention(definitions))
     for definition in definitions:
         for table in definition.metadata.tables.values():
-            table.to_metadata(merged)
+            table.to_metadata(merged, referred_schema_fn=_keep_own_schema)
     return merged
+
+
+def _keep_own_schema(
+    table: Table,
+    to_schema: str | None,
+    constraint: ForeignKeyConstraint,
+    referred_schema: str | None,
+) -> str | None:
+    """Resolve an unqualified foreign key against its own table's schema.
+
+    A package that sets ``MetaData(schema=...)`` may write ``ForeignKey("tenant.id")``
+    without repeating the schema on all sixteen of them: within that MetaData,
+    SQLAlchemy applies the metadata's schema to the unqualified target. The merged
+    MetaData here holds several packages and therefore has no schema of its own, so
+    that context is gone and ``to_metadata`` looks the target up in the default
+    schema instead. It is not there, and the failure names the symptom rather than
+    the cause -- "could not find table 'tenant'" for a table that plainly exists.
+
+    Passing this in restores the only reading that can be meant: a foreign key
+    written without a schema points inside the schema its own table lives in. A
+    qualified target is returned untouched, so a cross-package key -- the reason
+    ``requires`` exists -- keeps pointing where it says.
+
+    `edutap.pass_builder` was the first package this hit. It cost a deploy: its
+    schema was simply absent, and every service that needed it answered 500 while
+    the deploy itself had gone green.
+    """
+    return referred_schema if referred_schema is not None else table.schema
 
 
 def _shared_naming_convention(definitions: Sequence[SchemaDefinition]) -> Mapping[str, Any]:

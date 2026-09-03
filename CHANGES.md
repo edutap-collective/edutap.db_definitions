@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.3
+
+- A foreign key written without a schema now resolves inside its own table's
+  schema when definitions are merged. A package that sets `MetaData(schema=...)`
+  may write `ForeignKey("tenant.id")` without repeating the schema on every one
+  of them — SQLAlchemy applies the metadata's schema within that MetaData. The
+  merged MetaData holds several packages and can carry no schema of its own, so
+  the copy looked the target up in the default schema and raised
+  `NoReferencedTableError`. `merged_metadata` now passes `referred_schema_fn`;
+  a qualified target is untouched, so a cross-package key still points where it
+  says.
+
+  `edutap.pass_builder` was the first package with intra-package keys written
+  that way, and every `edutap-dbdef` command failed on it — `create`, `diff`,
+  `check` and `migrate` alike. The message named the symptom rather than the
+  cause: "could not find table 'tenant'" for a table declared three lines above.
+
 ## 0.3.2
 
 - `ClusterSettings` declares `secrets_dir="/run/secrets"`, so the password arrives
