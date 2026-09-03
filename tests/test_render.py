@@ -475,3 +475,73 @@ def test_a_domains_constraints_are_lost_in_the_rendered_ddl():
     assert "CREATE DOMAIN typelib.positive_int AS INTEGER;" in sql
     assert "CHECK" not in sql
     assert "DEFAULT" not in sql
+
+
+def test_an_unqualified_foreign_key_resolves_inside_its_own_schema():
+    """A package with `MetaData(schema=...)` may leave its own keys unqualified.
+
+    SQLAlchemy applies a MetaData's schema to a foreign key target given as a bare
+    string, so inside the package `ForeignKey("tenant.id")` means
+    `pass_builder.tenant.id`. The merged MetaData holds several packages and can
+    therefore carry no schema of its own, and without `referred_schema_fn` the copy
+    looks the target up in the default schema instead.
+
+    `edutap.pass_builder` was the first package to write its sixteen keys that way.
+    The failure named the symptom and not the cause -- "could not find table
+    'tenant'" for a table declared three lines above -- and its schema was simply
+    absent from production until someone looked.
+    """
+    from sqlalchemy import Column, ForeignKey, Integer, MetaData, Table
+
+    from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION, schema="owned")
+    Table("tenant", metadata, Column("id", Integer, primary_key=True))
+    Table(
+        "api_client",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("tenant_id", Integer, ForeignKey("tenant.id")),
+    )
+
+    sql = render_create([SchemaDefinition(name="pkg.owned", metadata=metadata)])
+
+    assert "REFERENCES owned.tenant (id)" in sql
+    # And the table it points at is created first -- the merge is also what puts
+    # the statements in dependency order.
+    assert sql.index("CREATE TABLE IF NOT EXISTS owned.tenant") < sql.index(
+        "CREATE TABLE IF NOT EXISTS owned.api_client"
+    )
+
+
+def test_a_qualified_foreign_key_still_crosses_package_boundaries():
+    """The fix must not redirect a key that names its schema.
+
+    A cross-package key is the reason `SchemaDefinition.requires` exists. Resolving
+    every key against its own table's schema would quietly turn each of them into a
+    key inside the referring package -- a table that does not exist there, or worse,
+    one that does.
+    """
+    from sqlalchemy import Column, ForeignKey, Integer, MetaData, Table
+
+    from edutap.db_definitions.definition import NAMING_CONVENTION, SchemaDefinition
+
+    upstream = MetaData(naming_convention=NAMING_CONVENTION, schema="contract")
+    Table("pass_state", upstream, Column("pass_id", Integer, primary_key=True))
+
+    downstream = MetaData(naming_convention=NAMING_CONVENTION, schema="owned")
+    Table(
+        "note",
+        downstream,
+        Column("id", Integer, primary_key=True),
+        Column("pass_id", Integer, ForeignKey("contract.pass_state.pass_id")),
+    )
+
+    sql = render_create(
+        [
+            SchemaDefinition(name="pkg.contract", metadata=upstream),
+            SchemaDefinition(name="pkg.owned", metadata=downstream),
+        ]
+    )
+
+    assert "REFERENCES contract.pass_state (pass_id)" in sql
