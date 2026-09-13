@@ -13,7 +13,7 @@
 # holding schema privileges for months; this container has no port, is reachable from
 # nowhere, and lives for seconds. See
 # docs/superpowers/specs/2026-08-11-migration-container-design.md.
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 COPY pyproject.toml README.md /app/
